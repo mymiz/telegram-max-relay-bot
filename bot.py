@@ -56,6 +56,9 @@ OWNER_WHITELIST = _parse_ids(os.getenv("OWNER_USER_IDS", ""))
 store = Store()
 router = Router()
 
+CODE_LEN = 6
+PHONE_HINT = "Только номер России: +79991234567 (11 цифр, начинается с +7)"
+
 
 class OwnerRegister(StatesGroup):
     waiting_phone = State()
@@ -83,7 +86,6 @@ BTN_REQUEST = "🔐 Запросить код"
 BTN_CANCEL = "❌ Отменить"
 BTN_REGISTER = "📱 Регистрация"
 BTN_DECLINE = "🚫 Отказаться"
-BTN_MYID = "🆔 Мой ID"
 BTN_MENU = "🏠 Меню"
 
 MENU_BUTTONS = {
@@ -92,9 +94,15 @@ MENU_BUTTONS = {
     BTN_CANCEL,
     BTN_REGISTER,
     BTN_DECLINE,
-    BTN_MYID,
     BTN_MENU,
 }
+
+
+def parse_code(raw: str) -> str | None:
+    digits = re.sub(r"\D", "", raw.strip())
+    if len(digits) == CODE_LEN and digits.isdigit():
+        return digits
+    return None
 
 
 def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
@@ -107,19 +115,19 @@ def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
                 KeyboardButton(text=BTN_REQUEST),
             ]
         )
-        rows.append([KeyboardButton(text=BTN_CANCEL)])
+        rows.append(
+            [
+                KeyboardButton(text=BTN_CANCEL),
+                KeyboardButton(text=BTN_MENU),
+            ]
+        )
+    elif can_be_owner(user_id):
+        rows.append([KeyboardButton(text=BTN_MENU)])
 
     if can_be_owner(user_id):
         rows.append([KeyboardButton(text=BTN_REGISTER)])
         if store.get_pending(user_id):
             rows.append([KeyboardButton(text=BTN_DECLINE)])
-
-    rows.append(
-        [
-            KeyboardButton(text=BTN_MYID),
-            KeyboardButton(text=BTN_MENU),
-        ]
-    )
 
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -153,23 +161,6 @@ def mask_phone(phone: str) -> str:
     return phone[:4] + " *** " + phone[-2:]
 
 
-@router.message(Command("myid"))
-async def cmd_myid(message: Message) -> None:
-    uid = message.from_user.id if message.from_user else 0
-    role = []
-    if is_admin(uid):
-        role.append("админ")
-    if uid in store.owners:
-        role.append("владелец")
-    roles = ", ".join(role) if role else "пользователь"
-    markup = main_menu_keyboard(uid) if (is_admin(uid) or can_be_owner(uid)) else None
-    await message.answer(
-        f"Ваш Telegram ID: `{uid}`\nРоль: {roles}",
-        parse_mode="Markdown",
-        reply_markup=markup,
-    )
-
-
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -179,7 +170,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         await message.answer(
             "Вы — **администратор**.\n\n"
             "Используйте кнопки ниже или команды:\n"
-            "📋 Владельцы · 🔐 Запросить код · ❌ Отменить · 🆔 Мой ID",
+            "📋 Владельцы · 🔐 Запросить код · ❌ Отменить · 🏠 Меню",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(uid),
         )
@@ -188,9 +179,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if can_be_owner(uid):
         await message.answer(
             "Вы — **владелец** (или можете им стать).\n\n"
-            "📱 Регистрация — привязать номер MAX\n"
-            "🆔 Мой ID\n\n"
-            "Когда админ запросит код — пришлите его цифрами в чат.",
+            "📱 Регистрация — номер MAX (+7...)\n\n"
+            f"Когда админ запросит код — пришлите **{CODE_LEN} цифр** (например 123456).",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(uid),
         )
@@ -219,7 +209,7 @@ async def cmd_register(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Отправьте номер телефона, привязанный к аккаунту MAX:\n"
         "• кнопкой ниже, или\n"
-        "• текстом: +79991234567",
+        f"• текстом: {PHONE_HINT}",
         reply_markup=contact_keyboard(),
     )
 
@@ -232,7 +222,7 @@ async def register_contact(message: Message, state: FSMContext) -> None:
         return
     phone = normalize_phone(contact.phone_number)
     if not phone:
-        await message.answer("Некорректный номер. Пример: +79991234567")
+        await message.answer(PHONE_HINT)
         return
     await _finish_register(message, state, phone)
 
@@ -244,7 +234,7 @@ async def register_text(message: Message, state: FSMContext) -> None:
     phone = normalize_phone(message.text)
     if not phone:
         await message.answer(
-            "Некорректный номер. Пример: +79991234567",
+            PHONE_HINT,
             reply_markup=contact_keyboard(),
         )
         return
@@ -358,7 +348,7 @@ async def _do_request(
             "🔐 **Запрос кода входа в MAX**\n\n"
             f"Администратор запрашивает код для номера `{phone}`.\n\n"
             "1. Если вы согласны — дождитесь SMS/кода от MAX\n"
-            "2. Отправьте код цифрами в этот чат\n"
+            f"2. Отправьте код — ровно **{CODE_LEN} цифр** в этот чат\n"
             "3. Отказ: кнопка 🚫 Отказаться",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(owner.user_id),
@@ -499,12 +489,12 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
         return
 
     if not command.args:
-        await message.answer("Пример: /code 123456")
+        await message.answer(f"Пример: /code {'1' * CODE_LEN}")
         return
 
-    code = re.sub(r"\D", "", command.args)
-    if len(code) < 4:
-        await message.answer("Код слишком короткий.")
+    code = parse_code(command.args)
+    if not code:
+        await message.answer(f"Код должен состоять ровно из {CODE_LEN} цифр.")
         return
 
     await _deliver_code(message, bot, req, code)
@@ -518,9 +508,6 @@ async def on_menu_button(message: Message, state: FSMContext, bot: Bot) -> None:
 
     if text == BTN_MENU:
         await cmd_start(message, state)
-        return
-    if text == BTN_MYID:
-        await cmd_myid(message)
         return
     if text == BTN_OWNERS and is_admin(uid):
         await cmd_owners(message)
@@ -563,11 +550,11 @@ async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
             )
         return
 
-    code = re.sub(r"\D", "", message.text.strip())
-    if len(code) < 4:
+    code = parse_code(message.text)
+    if not code:
         await message.answer(
-            "Отправьте код цифрами (4+ символов) или /code 123456\n"
-            "Отказ: /decline"
+            f"Код должен состоять ровно из {CODE_LEN} цифр (например 123456).\n"
+            "Отказ: 🚫 Отказаться"
         )
         return
 

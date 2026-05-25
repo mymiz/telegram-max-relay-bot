@@ -15,14 +15,13 @@ STORE_FILE = DATA_DIR / "store.json"
 
 
 def normalize_phone(raw: str) -> str | None:
+    """Только российские номера: +7 и 10 цифр после кода страны."""
     digits = re.sub(r"\D", "", raw.strip())
     if len(digits) == 11 and digits.startswith("8"):
         digits = "7" + digits[1:]
-    if len(digits) == 10:
+    elif len(digits) == 10:
         digits = "7" + digits
     if len(digits) == 11 and digits.startswith("7"):
-        return f"+{digits}"
-    if len(digits) >= 10:
         return f"+{digits}"
     return None
 
