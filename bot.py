@@ -17,6 +17,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
@@ -74,12 +77,74 @@ def can_be_owner(user_id: int | None) -> bool:
     return user_id in OWNER_WHITELIST
 
 
+# Тексты кнопок меню (обрабатываются как нажатия)
+BTN_OWNERS = "📋 Владельцы"
+BTN_REQUEST = "🔐 Запросить код"
+BTN_CANCEL = "❌ Отменить"
+BTN_REGISTER = "📱 Регистрация"
+BTN_DECLINE = "🚫 Отказаться"
+BTN_MYID = "🆔 Мой ID"
+BTN_MENU = "🏠 Меню"
+
+MENU_BUTTONS = {
+    BTN_OWNERS,
+    BTN_REQUEST,
+    BTN_CANCEL,
+    BTN_REGISTER,
+    BTN_DECLINE,
+    BTN_MYID,
+    BTN_MENU,
+}
+
+
+def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+
+    if is_admin(user_id):
+        rows.append(
+            [
+                KeyboardButton(text=BTN_OWNERS),
+                KeyboardButton(text=BTN_REQUEST),
+            ]
+        )
+        rows.append([KeyboardButton(text=BTN_CANCEL)])
+
+    if can_be_owner(user_id):
+        rows.append([KeyboardButton(text=BTN_REGISTER)])
+        if store.get_pending(user_id):
+            rows.append([KeyboardButton(text=BTN_DECLINE)])
+
+    rows.append(
+        [
+            KeyboardButton(text=BTN_MYID),
+            KeyboardButton(text=BTN_MENU),
+        ]
+    )
+
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 def contact_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
+
+def owners_request_inline() -> InlineKeyboardMarkup | None:
+    if not store.owners:
+        return None
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"🔐 {mask_phone(o.phone)} — {o.name or o.user_id}",
+                callback_data=f"req:{o.phone}",
+            )
+        ]
+        for o in store.owners.values()
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def mask_phone(phone: str) -> str:
@@ -97,9 +162,11 @@ async def cmd_myid(message: Message) -> None:
     if uid in store.owners:
         role.append("владелец")
     roles = ", ".join(role) if role else "пользователь"
+    markup = main_menu_keyboard(uid) if (is_admin(uid) or can_be_owner(uid)) else None
     await message.answer(
         f"Ваш Telegram ID: `{uid}`\nРоль: {roles}",
         parse_mode="Markdown",
+        reply_markup=markup,
     )
 
 
@@ -111,28 +178,28 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if is_admin(uid):
         await message.answer(
             "Вы — **администратор**.\n\n"
-            "Команды:\n"
-            "/owners — список владельцев и номеров\n"
-            "/request +79991234567 — запросить код входа в MAX на номер\n"
-            "/cancel — отменить свой активный запрос\n"
-            "/myid — ваш ID\n\n"
-            "Владелец должен сначала зарегистрировать номер: /register",
+            "Используйте кнопки ниже или команды:\n"
+            "📋 Владельцы · 🔐 Запросить код · ❌ Отменить · 🆔 Мой ID",
             parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(uid),
         )
         return
 
     if can_be_owner(uid):
         await message.answer(
             "Вы — **владелец** (или можете им стать).\n\n"
-            "/register — привязать номер телефона MAX\n"
-            "/myid — ваш ID\n\n"
-            "Когда админ запросит код, пришлите его сюда "
-            "(цифры или команда /code 123456).",
+            "📱 Регистрация — привязать номер MAX\n"
+            "🆔 Мой ID\n\n"
+            "Когда админ запросит код — пришлите его цифрами в чат.",
             parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(uid),
         )
         if uid in store.owners:
             o = store.owners[uid]
-            await message.answer(f"Ваш номер уже в системе: {mask_phone(o.phone)}")
+            await message.answer(
+                f"Ваш номер уже в системе: {mask_phone(o.phone)}",
+                reply_markup=main_menu_keyboard(uid),
+            )
         return
 
     await message.answer(
@@ -209,7 +276,7 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
     await message.answer(
         f"Номер {mask_phone(phone)} сохранён.\n"
         "Когда админ запросит код входа в MAX, вы получите уведомление.",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=main_menu_keyboard(user.id),
     )
 
     for admin_id in ADMIN_IDS:
@@ -245,7 +312,91 @@ async def cmd_owners(message: Message) -> None:
             f"  ID: `{o.user_id}`{pending}\n"
             f"  Запрос: /request {o.phone}"
         )
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    kb = owners_request_inline()
+    await message.answer(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+async def _do_request(
+    bot: Bot, admin_id: int, phone: str, reply_to: Message | None = None
+) -> bool:
+    owner = store.owner_by_phone(phone)
+    if not owner:
+        text = (
+            f"Владелец с номером {phone} не зарегистрирован.\n"
+            "Попросите его нажать 📱 Регистрация"
+        )
+        if reply_to:
+            await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
+        return False
+
+    if store.get_pending(owner.user_id):
+        text = "По этому владельцу уже есть активный запрос кода."
+        if reply_to:
+            await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
+        return False
+
+    store.set_pending(
+        CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
+    )
+
+    text = (
+        f"Запрос отправлен владельцу {owner.name or owner.user_id} "
+        f"({mask_phone(phone)}).\n\n"
+        f"Запустите вход в MAX на этот номер. "
+        f"Когда владелец пришлёт код — он появится здесь."
+    )
+    if reply_to:
+        await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
+
+    try:
+        await bot.send_message(
+            owner.user_id,
+            "🔐 **Запрос кода входа в MAX**\n\n"
+            f"Администратор запрашивает код для номера `{phone}`.\n\n"
+            "1. Если вы согласны — дождитесь SMS/кода от MAX\n"
+            "2. Отправьте код цифрами в этот чат\n"
+            "3. Отказ: кнопка 🚫 Отказаться",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(owner.user_id),
+        )
+    except Exception:
+        log.exception("Не удалось написать владельцу %s", owner.user_id)
+        store.clear_pending(owner.user_id)
+        if reply_to:
+            await reply_to.answer(
+                "Не удалось связаться с владельцем в Telegram.",
+                reply_markup=main_menu_keyboard(admin_id),
+            )
+        return False
+    return True
+
+
+@router.callback_query(F.data.startswith("req:"))
+async def cb_request_code(callback: CallbackQuery, bot: Bot) -> None:
+    if not callback.from_user or not is_admin(callback.from_user.id):
+        await callback.answer("Только для администратора", show_alert=True)
+        return
+
+    phone = normalize_phone((callback.data or "").removeprefix("req:"))
+    if not phone:
+        await callback.answer("Некорректный номер", show_alert=True)
+        return
+
+    ok = await _do_request(bot, callback.from_user.id, phone, None)
+    if not ok:
+        await callback.answer("Не удалось отправить запрос", show_alert=True)
+        return
+
+    await callback.answer("Запрос отправлен")
+    if callback.message:
+        await callback.message.answer(
+            f"Запрос кода для {mask_phone(phone)} отправлен.",
+            reply_markup=main_menu_keyboard(callback.from_user.id),
+        )
 
 
 @router.message(Command("request"))
@@ -256,10 +407,18 @@ async def cmd_request(message: Message, command: CommandObject, bot: Bot) -> Non
         return
 
     if not command.args:
-        await message.answer(
-            "Укажите номер:\n`/request +79991234567`",
-            parse_mode="Markdown",
-        )
+        kb = owners_request_inline()
+        if kb:
+            await message.answer(
+                "Выберите владельца или укажите номер:\n`/request +79991234567`",
+                parse_mode="Markdown",
+                reply_markup=kb,
+            )
+        else:
+            await message.answer(
+                "Владельцев пока нет. Попросите нажать 📱 Регистрация.",
+                reply_markup=main_menu_keyboard(admin_id or 0),
+            )
         return
 
     phone = normalize_phone(command.args.strip())
@@ -267,48 +426,7 @@ async def cmd_request(message: Message, command: CommandObject, bot: Bot) -> Non
         await message.answer("Некорректный номер.")
         return
 
-    owner = store.owner_by_phone(phone)
-    if not owner:
-        await message.answer(
-            f"Владелец с номером {phone} не зарегистрирован.\n"
-            "Попросите его написать боту /register"
-        )
-        return
-
-    if store.get_pending(owner.user_id):
-        await message.answer("По этому владельцу уже есть активный запрос кода.")
-        return
-
-    store.set_pending(
-        CodeRequest(owner_id=owner.user_id, admin_id=admin_id or 0, phone=phone)
-    )
-
-    await message.answer(
-        f"Запрос отправлен владельцу {owner.name or owner.user_id} "
-        f"({mask_phone(phone)}).\n\n"
-        f"Запустите вход в MAX на этот номер. "
-        f"Когда владелец пришлёт код — он появится здесь."
-    )
-
-    try:
-        await bot.send_message(
-            owner.user_id,
-            "🔐 **Запрос кода входа в MAX**\n\n"
-            f"Администратор запрашивает код для номера `{phone}`.\n\n"
-            "1. Если вы согласны — дождитесь SMS/кода от MAX\n"
-            "2. Отправьте код сюда (только цифры) или: `/code 123456`\n"
-            "3. Чтобы отказать: /decline",
-            parse_mode="Markdown",
-        )
-        await bot.send_message(
-            owner.user_id,
-            "Ожидаю код…",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-    except Exception:
-        log.exception("Не удалось написать владельцу %s", owner.user_id)
-        store.clear_pending(owner.user_id)
-        await message.answer("Не удалось связаться с владельцем в Telegram.")
+    await _do_request(bot, admin_id or 0, phone, message)
 
 
 @router.message(Command("cancel"))
@@ -330,19 +448,26 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
                 except Exception:
                     pass
         await message.answer(
-            f"Отменено запросов: {cancelled}" if cancelled else "Активных запросов нет."
+            f"Отменено запросов: {cancelled}" if cancelled else "Активных запросов нет.",
+            reply_markup=main_menu_keyboard(uid or 0),
         )
         return
 
     req = store.clear_pending(uid or 0)
     if req:
-        await message.answer("Ваш запрос кода отменён.")
+        await message.answer(
+            "Ваш запрос кода отменён.",
+            reply_markup=main_menu_keyboard(uid or 0),
+        )
         try:
             await message.bot.send_message(req.admin_id, "Владелец отменил передачу кода.")
         except Exception:
             pass
     else:
-        await message.answer("Нет активного запроса.")
+        await message.answer(
+            "Нет активного запроса.",
+            reply_markup=main_menu_keyboard(uid or 0),
+        )
 
 
 @router.message(Command("decline"))
@@ -352,7 +477,10 @@ async def cmd_decline(message: Message) -> None:
     if not req:
         await message.answer("Нет активного запроса.")
         return
-    await message.answer("Вы отказались передавать код.")
+    await message.answer(
+        "Вы отказались передавать код.",
+        reply_markup=main_menu_keyboard(uid),
+    )
     try:
         await message.bot.send_message(
             req.admin_id,
@@ -382,6 +510,44 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
     await _deliver_code(message, bot, req, code)
 
 
+@router.message(F.text.in_(MENU_BUTTONS))
+async def on_menu_button(message: Message, state: FSMContext, bot: Bot) -> None:
+    await state.clear()
+    uid = message.from_user.id if message.from_user else 0
+    text = message.text or ""
+
+    if text == BTN_MENU:
+        await cmd_start(message, state)
+        return
+    if text == BTN_MYID:
+        await cmd_myid(message)
+        return
+    if text == BTN_OWNERS and is_admin(uid):
+        await cmd_owners(message)
+        return
+    if text == BTN_REQUEST and is_admin(uid):
+        kb = owners_request_inline()
+        if kb:
+            await message.answer("Выберите номер для запроса кода:", reply_markup=kb)
+        else:
+            await message.answer(
+                "Владельцев пока нет. Попросите нажать 📱 Регистрация.",
+                reply_markup=main_menu_keyboard(uid),
+            )
+        return
+    if text == BTN_CANCEL:
+        await cmd_cancel(message, state)
+        return
+    if text == BTN_REGISTER and can_be_owner(uid):
+        await cmd_register(message, state)
+        return
+    if text == BTN_DECLINE:
+        await cmd_decline(message)
+        return
+
+    await message.answer("Команда недоступна.", reply_markup=main_menu_keyboard(uid))
+
+
 @router.message(F.text)
 async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
     if await state.get_state():
@@ -390,10 +556,11 @@ async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
     uid = message.from_user.id if message.from_user else 0
     req = store.get_pending(uid)
     if not req or not message.text:
-        if is_admin(uid):
-            await message.answer("Команды: /owners, /request +7..., /cancel")
-        elif uid in store.owners:
-            await message.answer("Жду запрос от админа или используйте /register")
+        if is_admin(uid) or can_be_owner(uid):
+            await message.answer(
+                "Используйте кнопки меню ниже 👇",
+                reply_markup=main_menu_keyboard(uid),
+            )
         return
 
     code = re.sub(r"\D", "", message.text.strip())
@@ -415,7 +582,11 @@ async def _deliver_code(
 
     store.clear_pending(req.owner_id)
 
-    await message.answer("Код передан администратору. Спасибо!")
+    uid = message.from_user.id if message.from_user else 0
+    await message.answer(
+        "Код передан администратору. Спасибо!",
+        reply_markup=main_menu_keyboard(uid),
+    )
 
     try:
         await bot.send_message(
