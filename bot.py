@@ -211,7 +211,7 @@ def format_owners_list() -> str:
         lines.append(
             f"\n**{i}. {o.name or 'Без имени'}**{uname}{pending}\n"
             f"ID: `{o.user_id}` · номеров: **{len(o.phones)}** · "
-            f"баланс: **{prof.balance:.0f} ₽**"
+            f"баланс: **{prof.balance:.0f}$**"
         )
         for phone in o.phones:
             lines.append(f"  • `{phone}`")
@@ -284,23 +284,24 @@ def format_profile_text(user_id: int, *, for_admin: bool = False) -> str:
     profile = store.get_profile(user_id)
     owner = store.owners.get(user_id)
     phones = owner.phones if owner else []
-    uname = f"@{profile.username}" if profile.username else "—"
 
-    # Текущие заявки по номерам этого владельца
+    name = (owner.name if owner else None) or profile.name or "—"
+    username = (owner.username if owner else None) or profile.username
+    uname = f"@{username}" if username else "—"
+
     in_queue = sum(1 for r in store.queue if r.owner_id == user_id)
     in_active = 1 if store.active and store.active.owner_id == user_id else 0
-    awaiting_code = in_active  # активный запрос = ожидает код
 
     lines = [
         "👤 *ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ*\n",
-        f"┌ Имя: {profile.name or '—'}",
+        f"┌ Имя: {name}",
         f"├ Юзернейм: {uname}",
         f"└ ID: `{user_id}`",
         "",
         "💰 *ФИНАНСОВАЯ СТАТИСТИКА*\n",
-        f"┌ Баланс: *{profile.balance:.2f} ₽*",
-        f"├ Заработано: *{profile.total_earned:.2f} ₽*",
-        f"└ Выведено: *{profile.withdrawn:.2f} ₽*",
+        f"┌ Баланс: *{profile.balance:.2f}$*",
+        f"├ Заработано: *{profile.total_earned:.2f}$*",
+        f"└ Выведено: *{profile.withdrawn:.2f}$*",
         "",
         "📱 *СДАННЫЕ АККАУНТЫ*\n",
         f"   MAX аккаунтов: *{len(phones)}*",
@@ -308,10 +309,8 @@ def format_profile_text(user_id: int, *, for_admin: bool = False) -> str:
         "⏳ *ТЕКУЩИЕ ЗАЯВКИ*\n",
         f"┌ В очереди: *{in_queue}*",
         f"├ В обработке: *{in_active}*",
-        f"└ Ожидают код: *{awaiting_code}*",
+        f"└ Ожидают код: *{in_active}*",
     ]
-    if not for_admin and CODE_REWARD_RUB > 0:
-        lines.append(f"\n_За каждый принятый код: +{CODE_REWARD_RUB:.0f} ₽_")
     return "\n".join(lines)
 
 
@@ -402,7 +401,7 @@ async def cmd_addbal(message: Message, command: CommandObject) -> None:
         return
     new_balance = store.add_balance(target, amount)
     await message.answer(
-        f"Баланс пользователя `{target}`: **{new_balance:.2f} ₽**",
+        f"Баланс пользователя `{target}`: **{new_balance:.2f}$**",
         parse_mode="Markdown",
         reply_markup=main_menu_keyboard(message.from_user.id),
     )
@@ -726,7 +725,7 @@ async def _finish_active(
         reward_note = ""
         if CODE_REWARD_RUB > 0:
             reward_note = (
-                f"\n💰 +{CODE_REWARD_RUB:.0f} ₽ · баланс **{profile.balance:.2f} ₽**"
+                f"\n💰 +{CODE_REWARD_RUB:.0f}$ · баланс **{profile.balance:.2f}$**"
             )
         if message:
             await message.answer(
