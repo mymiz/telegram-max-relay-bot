@@ -22,15 +22,34 @@ git add bot.py storage.py requirements.txt Dockerfile railway.toml render.yaml .
 git commit -m "Telegram MAX relay bot"
 ```
 
-На GitHub: **New repository** → имя, например `telegram-max-relay-bot` → без README.
+На GitHub: **New repository** → имя `telegram-max-relay-bot` → **без** README, .gitignore и license.
+
+Подставьте **свой логин** GitHub вместо `username`:
 
 ```powershell
-git remote add origin https://github.com/ВАШ_ЛОГИН/telegram-max-relay-bot.git
 git branch -M main
+
+# Если origin уже есть (ошибка "remote origin already exists"):
+git remote remove origin
+
+git remote add origin https://github.com/username/telegram-max-relay-bot.git
 git push -u origin main
 ```
 
+Проверка: на GitHub в репозитории должны быть файлы `bot.py`, `Dockerfile`, `railway.toml`.
+
 Файл `.env` в git **не попадает** (в `.gitignore`) — это правильно.
+
+### Ошибка Railway: «Failed to fetch repository files»
+
+Обычно репозиторий на GitHub **пустой** или код **не запушен**. Проверьте:
+
+1. На github.com/ваш-логин/telegram-max-relay-bot есть файлы (не пустая страница).
+2. В Railway: **Settings** → **Disconnect** репозиторий → подключите снова после push.
+3. Railway → **Settings** → **Root Directory** — оставьте **пустым** (код в корне репо, не в подпапке).
+4. Ветка: **main** (не `master`).
+
+Если GitHub не хотите использовать — см. **Деплой без GitHub** ниже.
 
 ## Шаг 2. Проект в Railway
 
@@ -64,6 +83,21 @@ git push -u origin main
 
 1. **Deployments** → логи: должны быть строки `Бот запущен` и `Start polling`
 2. В Telegram напишите боту `/start`
+
+## Деплой без GitHub (Railway CLI)
+
+Если GitHub не работает — загрузка с компьютера:
+
+```powershell
+cd "c:\Users\Пользователь\Desktop\Димон\it\cursor code\telegram-max-relay-bot"
+npm install -g @railway/cli
+railway login
+railway init
+railway variables set TELEGRAM_BOT_TOKEN=ваш_токен ADMIN_USER_IDS=ваш_id DATA_DIR=/data
+railway up
+```
+
+Переменные потом можно изменить в веб-панели Railway. Диск `/data`: Volumes → Add Volume → mount `/data`.
 
 ## Альтернатива: Render
 
