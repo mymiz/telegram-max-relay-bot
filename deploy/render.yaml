@@ -1,11 +1,8 @@
-# Render → New → Blueprint → подключить репозиторий с этим файлом
-# Или создать Background Worker вручную с Docker
-
 services:
   - type: worker
     name: telegram-max-relay-bot
     runtime: docker
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: ./deploy/Dockerfile
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
