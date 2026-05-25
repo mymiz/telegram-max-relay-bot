@@ -135,18 +135,41 @@ def contact_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def format_owners_list() -> str:
+    people = len(store.owners)
+    total = store.total_phones()
+    lines = [
+        f"📋 **Владельцы**\n"
+        f"Людей: **{people}** · Номеров: **{total}**\n"
+    ]
+    for i, o in enumerate(store.owners.values(), 1):
+        pending = " ⏳ ждёт код" if store.get_pending(o.user_id) else ""
+        uname = f" @{o.username}" if o.username else ""
+        lines.append(
+            f"\n**{i}. {o.name or 'Без имени'}**{uname}{pending}\n"
+            f"ID: `{o.user_id}` · номеров: **{len(o.phones)}**"
+        )
+        for phone in o.phones:
+            lines.append(f"  • `{phone}`")
+    lines.append("\n🔐 Нажмите кнопку под сообщением, чтобы запросить код.")
+    return "\n".join(lines)
+
+
 def owners_request_inline() -> InlineKeyboardMarkup | None:
     if not store.owners:
         return None
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text=f"🔐 {mask_phone(o.phone)} — {o.name or o.user_id}",
-                callback_data=f"req:{o.phone}",
+    buttons: list[list[InlineKeyboardButton]] = []
+    for o in store.owners.values():
+        label = (o.name or str(o.user_id))[:20]
+        for phone in o.phones:
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"🔐 {mask_phone(phone)} — {label}",
+                        callback_data=f"req:{phone}",
+                    )
+                ]
             )
-        ]
-        for o in store.owners.values()
-    ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -180,8 +203,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         )
         if uid in store.owners:
             o = store.owners[uid]
+            phones = "\n".join(f"  • {mask_phone(p)}" for p in o.phones)
             await message.answer(
-                f"Ваш номер уже в системе: {mask_phone(o.phone)}",
+                f"Ваши номера ({len(o.phones)}):\n{phones}",
                 reply_markup=main_menu_keyboard(uid),
             )
         return
@@ -250,15 +274,24 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
         await state.clear()
         return
 
-    store.register_owner(
+    owner, already = store.register_owner(
         user.id,
         phone,
         name=user.full_name,
         username=user.username,
     )
     await state.clear()
+    if already:
+        await message.answer(
+            f"Номер {mask_phone(phone)} уже в вашем списке.\n"
+            f"Всего номеров: {len(owner.phones)}",
+            reply_markup=main_menu_keyboard(user.id),
+        )
+        return
+
     await message.answer(
         f"Номер {mask_phone(phone)} сохранён.\n"
+        f"Всего ваших номеров: {len(owner.phones)}\n"
         "Когда админ запросит код входа в MAX, вы получите уведомление.",
         reply_markup=main_menu_keyboard(user.id),
     )
@@ -267,9 +300,9 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
         try:
             await message.bot.send_message(
                 admin_id,
-                f"Владелец зарегистрирован: {user.full_name or user.id}\n"
-                f"Номер: {phone}\n"
-                f"ID: `{user.id}`",
+                f"Новый номер: {user.full_name or user.id}\n"
+                f"Телефон: {phone}\n"
+                f"Всего у человека: {len(owner.phones)} · ID: `{user.id}`",
                 parse_mode="Markdown",
             )
         except Exception:
@@ -283,22 +316,15 @@ async def cmd_owners(message: Message) -> None:
         return
 
     if not store.owners:
-        await message.answer("Владельцев пока нет. Попросите владельца выполнить /register")
+        await message.answer(
+            "Владельцев пока нет. Попросите нажать «Сдать номер📱».",
+            reply_markup=main_menu_keyboard(message.from_user.id if message.from_user else 0),
+        )
         return
 
-    lines = ["Зарегистрированные владельцы:\n"]
-    for o in store.owners.values():
-        pending = " ⏳ ждёт код" if store.get_pending(o.user_id) else ""
-        uname = f"@{o.username}" if o.username else ""
-        lines.append(
-            f"• {o.name or '—'} {uname}\n"
-            f"  Номер: `{o.phone}`\n"
-            f"  ID: `{o.user_id}`{pending}\n"
-            f"  Запрос: /request {o.phone}"
-        )
     kb = owners_request_inline()
     await message.answer(
-        "\n".join(lines),
+        format_owners_list(),
         parse_mode="Markdown",
         reply_markup=kb,
     )

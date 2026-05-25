@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +29,7 @@ def normalize_phone(raw: str) -> str | None:
 @dataclass
 class Owner:
     user_id: int
-    phone: str
+    phones: list[str] = field(default_factory=list)
     name: str | None = None
     username: str | None = None
 
@@ -52,9 +52,14 @@ class Store:
             return
         raw = json.loads(STORE_FILE.read_text(encoding="utf-8"))
         for uid, o in raw.get("owners", {}).items():
+            phones: list[str] = []
+            if "phones" in o and isinstance(o["phones"], list):
+                phones = [p for p in o["phones"] if p]
+            elif o.get("phone"):
+                phones = [o["phone"]]
             self.owners[int(uid)] = Owner(
                 user_id=int(o["user_id"]),
-                phone=o["phone"],
+                phones=phones,
                 name=o.get("name"),
                 username=o.get("username"),
             )
@@ -68,21 +73,20 @@ class Store:
     def save(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
-            "owners": {
-                str(k): asdict(v) for k, v in self.owners.items()
-            },
-            "pending": {
-                str(k): asdict(v) for k, v in self.pending.items()
-            },
+            "owners": {str(k): asdict(v) for k, v in self.owners.items()},
+            "pending": {str(k): asdict(v) for k, v in self.pending.items()},
         }
         STORE_FILE.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
+    def total_phones(self) -> int:
+        return sum(len(o.phones) for o in self.owners.values())
+
     def owner_by_phone(self, phone: str) -> Owner | None:
         for owner in self.owners.values():
-            if owner.phone == phone:
+            if phone in owner.phones:
                 return owner
         return None
 
@@ -93,16 +97,29 @@ class Store:
         *,
         name: str | None = None,
         username: str | None = None,
-    ) -> Owner:
+    ) -> tuple[Owner, bool]:
+        """Возвращает (владелец, номер_уже_был)."""
+        if user_id in self.owners:
+            owner = self.owners[user_id]
+            if phone in owner.phones:
+                return owner, True
+            owner.phones.append(phone)
+            if name:
+                owner.name = name
+            if username:
+                owner.username = username
+            self.save()
+            return owner, False
+
         owner = Owner(
             user_id=user_id,
-            phone=phone,
+            phones=[phone],
             name=name,
             username=username,
         )
         self.owners[user_id] = owner
         self.save()
-        return owner
+        return owner, False
 
     def set_pending(self, request: CodeRequest) -> None:
         self.pending[request.owner_id] = request
