@@ -285,20 +285,31 @@ def format_profile_text(user_id: int, *, for_admin: bool = False) -> str:
     owner = store.owners.get(user_id)
     phones = owner.phones if owner else []
     uname = f"@{profile.username}" if profile.username else "—"
+
+    # Текущие заявки по номерам этого владельца
+    in_queue = sum(1 for r in store.queue if r.owner_id == user_id)
+    in_active = 1 if store.active and store.active.owner_id == user_id else 0
+    awaiting_code = in_active  # активный запрос = ожидает код
+
     lines = [
-        "👤 **Профиль**\n",
-        f"Имя: {profile.name or '—'}",
-        f"Username: {uname}",
-        f"ID: `{user_id}`",
-        f"\n💰 Баланс: **{profile.balance:.2f} ₽**",
-        f"✅ Кодов передано: **{profile.codes_ok}**",
-        f"❌ Не сдано вовремя / отказ: **{profile.codes_fail}**",
-        f"📱 Номеров в системе: **{len(phones)}**",
+        "👤 *ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ*\n",
+        f"┌ Имя: {profile.name or '—'}",
+        f"├ Юзернейм: {uname}",
+        f"└ ID: `{user_id}`",
+        "",
+        "💰 *ФИНАНСОВАЯ СТАТИСТИКА*\n",
+        f"┌ Баланс: *{profile.balance:.2f} ₽*",
+        f"├ Заработано: *{profile.total_earned:.2f} ₽*",
+        f"└ Выведено: *{profile.withdrawn:.2f} ₽*",
+        "",
+        "📱 *СДАННЫЕ АККАУНТЫ*\n",
+        f"   MAX аккаунтов: *{len(phones)}*",
+        "",
+        "⏳ *ТЕКУЩИЕ ЗАЯВКИ*\n",
+        f"┌ В очереди: *{in_queue}*",
+        f"├ В обработке: *{in_active}*",
+        f"└ Ожидают код: *{awaiting_code}*",
     ]
-    if phones:
-        lines.append("\n**Ваши номера:**")
-        for p in phones:
-            lines.append(f"  • `{p}`")
     if not for_admin and CODE_REWARD_RUB > 0:
         lines.append(f"\n_За каждый принятый код: +{CODE_REWARD_RUB:.0f} ₽_")
     return "\n".join(lines)

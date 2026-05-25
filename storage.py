@@ -41,6 +41,8 @@ class UserProfile:
     balance: float = 0.0
     codes_ok: int = 0
     codes_fail: int = 0
+    total_earned: float = 0.0
+    withdrawn: float = 0.0
     name: str | None = None
     username: str | None = None
     created_at: float = field(default_factory=time.time)
@@ -89,6 +91,8 @@ class Store:
                 balance=float(p.get("balance", 0)),
                 codes_ok=int(p.get("codes_ok", 0)),
                 codes_fail=int(p.get("codes_fail", 0)),
+                total_earned=float(p.get("total_earned", 0)),
+                withdrawn=float(p.get("withdrawn", 0)),
                 name=p.get("name"),
                 username=p.get("username"),
                 created_at=float(p.get("created_at", time.time())),
@@ -186,6 +190,7 @@ class Store:
         profile = self.get_profile(user_id)
         profile.codes_ok += 1
         profile.balance = round(profile.balance + reward, 2)
+        profile.total_earned = round(profile.total_earned + reward, 2)
         self.save()
         return profile
 
