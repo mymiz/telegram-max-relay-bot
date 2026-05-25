@@ -267,10 +267,10 @@ async def _send_welcome(message: Message, uid: int) -> None:
     kb = main_menu_keyboard(uid)
     if LOGO_FILE:
         await message.answer_photo(photo=LOGO_FILE, caption=welcome_text(),
-                                   parse_mode="MarkdownV2", reply_markup=kb)
+                                   parse_mode="MarkdownV2", reply_markup=_SUPPORT_KB)
     else:
-        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=kb)
-    await message.answer("💬 Есть вопросы?", reply_markup=_SUPPORT_KB)
+        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=_SUPPORT_KB)
+    await message.answer("👇 Выберите раздел:", reply_markup=kb)
 
 # ─── Команды ────────────────────────────────────────────────────────────────
 
