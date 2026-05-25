@@ -84,7 +84,7 @@ def can_be_owner(user_id: int | None) -> bool:
 BTN_OWNERS = "📋 Владельцы"
 BTN_REQUEST = "🔐 Запросить код"
 BTN_CANCEL = "❌ Отменить"
-BTN_REGISTER = "📱 Регистрация"
+BTN_REGISTER = "Сдать номер📱"
 BTN_DECLINE = "🚫 Отказаться"
 BTN_MENU = "🏠 Меню"
 
@@ -115,19 +115,14 @@ def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
                 KeyboardButton(text=BTN_REQUEST),
             ]
         )
-        rows.append(
-            [
-                KeyboardButton(text=BTN_CANCEL),
-                KeyboardButton(text=BTN_MENU),
-            ]
-        )
-    elif can_be_owner(user_id):
-        rows.append([KeyboardButton(text=BTN_MENU)])
+        rows.append([KeyboardButton(text=BTN_CANCEL)])
 
     if can_be_owner(user_id):
         rows.append([KeyboardButton(text=BTN_REGISTER)])
         if store.get_pending(user_id):
             rows.append([KeyboardButton(text=BTN_DECLINE)])
+
+    rows.append([KeyboardButton(text=BTN_MENU)])
 
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -179,7 +174,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if can_be_owner(uid):
         await message.answer(
             "Вы — **владелец** (или можете им стать).\n\n"
-            "📱 Регистрация — номер MAX (+7...)\n\n"
+            "Сдать номер📱 — привязать номер MAX (+7...)\n\n"
             f"Когда админ запросит код — пришлите **{CODE_LEN} цифр** (например 123456).",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(uid),
@@ -317,7 +312,7 @@ async def _do_request(
     if not owner:
         text = (
             f"Владелец с номером {phone} не зарегистрирован.\n"
-            "Попросите его нажать 📱 Регистрация"
+            "Попросите нажать «Сдать номер📱»"
         )
         if reply_to:
             await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
@@ -406,7 +401,7 @@ async def cmd_request(message: Message, command: CommandObject, bot: Bot) -> Non
             )
         else:
             await message.answer(
-                "Владельцев пока нет. Попросите нажать 📱 Регистрация.",
+                "Владельцев пока нет. Попросите нажать «Сдать номер📱».",
                 reply_markup=main_menu_keyboard(admin_id or 0),
             )
         return
@@ -518,7 +513,7 @@ async def on_menu_button(message: Message, state: FSMContext, bot: Bot) -> None:
             await message.answer("Выберите номер для запроса кода:", reply_markup=kb)
         else:
             await message.answer(
-                "Владельцев пока нет. Попросите нажать 📱 Регистрация.",
+                "Владельцев пока нет. Попросите нажать «Сдать номер📱».",
                 reply_markup=main_menu_keyboard(uid),
             )
         return
