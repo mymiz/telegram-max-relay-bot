@@ -280,14 +280,22 @@ def welcome_text() -> str:
     )
 
 
+def _md_escape(text: str) -> str:
+    """Экранирует спецсимволы Markdown в пользовательских строках."""
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def format_profile_text(user_id: int, *, for_admin: bool = False) -> str:
     profile = store.get_profile(user_id)
     owner = store.owners.get(user_id)
     phones = owner.phones if owner else []
 
-    name = (owner.name if owner else None) or profile.name or "—"
-    username = (owner.username if owner else None) or profile.username
-    uname = f"@{username}" if username else "—"
+    raw_name = (owner.name if owner else None) or profile.name or "—"
+    raw_username = (owner.username if owner else None) or profile.username
+    name = _md_escape(raw_name)
+    uname = f"@{_md_escape(raw_username)}" if raw_username else "—"
 
     in_queue = sum(1 for r in store.queue if r.owner_id == user_id)
     in_active = 1 if store.active and store.active.owner_id == user_id else 0
