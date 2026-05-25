@@ -61,6 +61,8 @@ class Store:
         self.profiles: dict[int, UserProfile] = {}
         self.active: CodeRequest | None = None
         self.queue: list[CodeRequest] = []
+        self.bot_status: str = "включён"
+        self.price: str = "не указан"
         self._load()
 
     def _load(self) -> None:
@@ -94,6 +96,8 @@ class Store:
         if raw.get("active"):
             self.active = self._req_from_dict(raw["active"])
         self.queue = [self._req_from_dict(r) for r in raw.get("queue", [])]
+        self.bot_status = raw.get("bot_status", "включён")
+        self.price = raw.get("price", "не указан")
 
         # Старый формат: pending → в очередь
         for p in raw.get("pending", {}).values():
@@ -122,6 +126,8 @@ class Store:
             "profiles": {str(k): asdict(v) for k, v in self.profiles.items()},
             "active": asdict(self.active) if self.active else None,
             "queue": [asdict(r) for r in self.queue],
+            "bot_status": self.bot_status,
+            "price": self.price,
         }
         STORE_FILE.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),

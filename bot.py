@@ -207,6 +207,37 @@ def mask_phone(phone: str) -> str:
     return phone[:4] + " *** " + phone[-2:]
 
 
+_MDV2_SPECIAL = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+
+
+def _esc(text: str) -> str:
+    return _MDV2_SPECIAL.sub(r"\\\1", text)
+
+
+def format_queue_status() -> str:
+    if store.active is None and not store.queue:
+        return "пусто"
+    parts = []
+    if store.active:
+        parts.append(f"{mask_phone(store.active.phone)} обрабатывается ({store.seconds_left()} сек)")
+    q = store.queue_size()
+    if q:
+        parts.append(f"{q} в очереди")
+    return " · ".join(parts)
+
+
+def welcome_text() -> str:
+    status_icon = "✅" if store.bot_status.lower() in ("включён", "включен", "on", "вкл") else "🔴"
+    queue_str = _esc(format_queue_status())
+    return (
+        "Добро пожаловать в бота TrustMax\\_bot\\!\n\n"
+        f"┌ Статус работы: {status_icon} {_esc(store.bot_status)}\n"
+        f"├ Актуальный прайс: {_esc(store.price)}\n"
+        f"└ Актуальная очередь: {queue_str}\n\n"
+        "👇 Выберите раздел для продолжения:"
+    )
+
+
 def format_profile_text(user_id: int, *, for_admin: bool = False) -> str:
     profile = store.get_profile(user_id)
     owner = store.owners.get(user_id)
@@ -238,20 +269,16 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     if is_admin(uid):
         await message.answer(
-            "Вы — **администратор**.\n\n"
-            "Используйте кнопки ниже или команды:\n"
-            "📋 Владельцы · 🔐 Запросить код · ❌ Отменить · 🏠 Меню",
-            parse_mode="Markdown",
+            welcome_text(),
+            parse_mode="MarkdownV2",
             reply_markup=main_menu_keyboard(uid),
         )
         return
 
     if can_be_owner(uid):
         await message.answer(
-            "Сдать номер📱 — привязать номер MAX (+7...)\n\n"
-            f"Когда админ запросит код — пришлите **{CODE_LEN} цифр**.\n"
-            f"👤 Профиль — баланс и статистика.",
-            parse_mode="Markdown",
+            welcome_text(),
+            parse_mode="MarkdownV2",
             reply_markup=main_menu_keyboard(uid),
         )
         if uid in store.owners:
@@ -317,6 +344,48 @@ async def cmd_addbal(message: Message, command: CommandObject) -> None:
     await message.answer(
         f"Баланс пользователя `{target}`: **{new_balance:.2f} ₽**",
         parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(message.from_user.id),
+    )
+
+
+@router.message(Command("setstatus"))
+async def cmd_setstatus(message: Message, command: CommandObject) -> None:
+    if not is_admin(message.from_user.id if message.from_user else None):
+        await message.answer("Только для администратора.")
+        return
+    value = (command.args or "").strip()
+    if not value:
+        await message.answer(
+            "Формат: `/setstatus включён` или `/setstatus выключен`",
+            parse_mode="Markdown",
+        )
+        return
+    store.bot_status = value
+    store.save()
+    await message.answer(
+        welcome_text(),
+        parse_mode="MarkdownV2",
+        reply_markup=main_menu_keyboard(message.from_user.id),
+    )
+
+
+@router.message(Command("setprice"))
+async def cmd_setprice(message: Message, command: CommandObject) -> None:
+    if not is_admin(message.from_user.id if message.from_user else None):
+        await message.answer("Только для администратора.")
+        return
+    value = (command.args or "").strip()
+    if not value:
+        await message.answer(
+            "Формат: `/setprice 50 ₽ за код`",
+            parse_mode="Markdown",
+        )
+        return
+    store.price = value
+    store.save()
+    await message.answer(
+        welcome_text(),
+        parse_mode="MarkdownV2",
         reply_markup=main_menu_keyboard(message.from_user.id),
     )
 
