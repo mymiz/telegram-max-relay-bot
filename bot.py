@@ -262,14 +262,10 @@ def _esc(text: str) -> str:
 
 
 def format_queue_status() -> str:
-    active = 1 if store.active else 0
-    q = store.queue_size()
-    total = active + q
+    total = store.total_phones()
     if total == 0:
         return "пусто"
-    if active:
-        return f"{total} номеров (обрабатывается + {q} в очереди)" if q else "1 номер обрабатывается"
-    return f"{q} номеров в очереди"
+    return str(total)
 
 
 def welcome_text() -> str:
