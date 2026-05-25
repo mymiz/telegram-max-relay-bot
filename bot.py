@@ -941,17 +941,9 @@ async def _show_settings(message: Message) -> None:
 
 # ─── FSM: ввод нового прайса ───────────────────────────────────────────────
 
-@router.message(AdminSettings.waiting_price, F.text)
+@router.message(AdminSettings.waiting_price, F.text, ~F.text.in_(MENU_BUTTONS))
 async def settings_price_input(message: Message, state: FSMContext) -> None:
     text = message.text or ""
-    if text == BTN_BACK:
-        await state.clear()
-        await _show_settings(message)
-        return
-    if text == BTN_MENU:
-        await state.clear()
-        await cmd_start(message, state)
-        return
     store.price = text
     store.save()
     await state.clear()
@@ -961,17 +953,9 @@ async def settings_price_input(message: Message, state: FSMContext) -> None:
 
 # ─── FSM: рассылка сообщения всем участникам ───────────────────────────────
 
-@router.message(AdminSettings.waiting_broadcast, F.text)
+@router.message(AdminSettings.waiting_broadcast, F.text, ~F.text.in_(MENU_BUTTONS))
 async def settings_broadcast_input(message: Message, state: FSMContext, bot: Bot) -> None:
     text = message.text or ""
-    if text == BTN_BACK:
-        await state.clear()
-        await _show_settings(message)
-        return
-    if text == BTN_MENU:
-        await state.clear()
-        await cmd_start(message, state)
-        return
 
     sender_id = message.from_user.id if message.from_user else 0
     recipients = store.all_users - {sender_id}
