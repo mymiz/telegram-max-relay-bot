@@ -120,7 +120,7 @@ def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
         )
         rows.append([KeyboardButton(text=BTN_CANCEL)])
 
-    if can_be_owner(user_id):
+    if can_be_owner(user_id) and not is_admin(user_id):
         rows.append([KeyboardButton(text=BTN_REGISTER)])
         if store.get_pending(user_id):
             rows.append([KeyboardButton(text=BTN_DECLINE)])
@@ -237,6 +237,12 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.message(Command("register"))
 async def cmd_register(message: Message, state: FSMContext) -> None:
     uid = message.from_user.id if message.from_user else 0
+    if is_admin(uid):
+        await message.answer(
+            "Администратору эта кнопка недоступна.",
+            reply_markup=main_menu_keyboard(uid),
+        )
+        return
     if not can_be_owner(uid):
         await message.answer("Регистрация владельцев отключена для вашего аккаунта.")
         return
@@ -728,7 +734,7 @@ async def on_menu_button(message: Message, state: FSMContext, bot: Bot) -> None:
     if text == BTN_CANCEL:
         await cmd_cancel(message, state)
         return
-    if text == BTN_REGISTER and can_be_owner(uid):
+    if text == BTN_REGISTER and can_be_owner(uid) and not is_admin(uid):
         await cmd_register(message, state)
         return
     if text == BTN_DECLINE:
