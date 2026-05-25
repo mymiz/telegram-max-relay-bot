@@ -263,9 +263,9 @@ _SUPPORT_KB = InlineKeyboardMarkup(inline_keyboard=[[
 ]])
 
 
-async def _send_welcome(message: Message, uid: int) -> None:
+async def _send_welcome(message: Message, uid: int, *, first_time: bool = False) -> None:
     kb = main_menu_keyboard(uid)
-    if LOGO_FILE:
+    if first_time and LOGO_FILE:
         await message.answer_photo(photo=LOGO_FILE, caption=welcome_text(),
                                    parse_mode="MarkdownV2", reply_markup=_SUPPORT_KB)
     else:
@@ -279,6 +279,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     user = message.from_user
     uid = user.id if user else 0
+    first_time = uid not in store.all_users
     if uid and user:
         store.track_user(uid)
         store.touch_profile(uid, name=user.full_name, username=user.username)
@@ -288,7 +289,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             store.save()
 
     if is_admin(uid) or can_be_owner(uid):
-        await _send_welcome(message, uid)
+        await _send_welcome(message, uid, first_time=first_time)
         if can_be_owner(uid) and not is_admin(uid) and uid in store.owners:
             o = store.owners[uid]
             phones = "\n".join(f"  • {mask_phone(p)}" for p in o.phones)
