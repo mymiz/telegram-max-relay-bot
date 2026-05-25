@@ -258,6 +258,11 @@ def format_profile_text(user_id: int) -> str:
 
 # ─── Отправка меню ──────────────────────────────────────────────────────────
 
+_SUPPORT_KB = InlineKeyboardMarkup(inline_keyboard=[[
+    InlineKeyboardButton(text="🛠 Тех. поддержка", url="https://t.me/Don1_Tomas1"),
+]])
+
+
 async def _send_welcome(message: Message, uid: int) -> None:
     kb = main_menu_keyboard(uid)
     if LOGO_FILE:
@@ -265,6 +270,7 @@ async def _send_welcome(message: Message, uid: int) -> None:
                                    parse_mode="MarkdownV2", reply_markup=kb)
     else:
         await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=kb)
+    await message.answer("💬 Есть вопросы?", reply_markup=_SUPPORT_KB)
 
 # ─── Команды ────────────────────────────────────────────────────────────────
 
