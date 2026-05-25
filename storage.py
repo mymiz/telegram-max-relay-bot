@@ -36,6 +36,17 @@ class Owner:
 
 
 @dataclass
+class UserProfile:
+    user_id: int
+    balance: float = 0.0
+    codes_ok: int = 0
+    codes_fail: int = 0
+    name: str | None = None
+    username: str | None = None
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass
 class CodeRequest:
     owner_id: int
     admin_id: int
@@ -47,6 +58,7 @@ class CodeRequest:
 class Store:
     def __init__(self) -> None:
         self.owners: dict[int, Owner] = {}
+        self.profiles: dict[int, UserProfile] = {}
         self.active: CodeRequest | None = None
         self.queue: list[CodeRequest] = []
         self._load()
@@ -66,6 +78,17 @@ class Store:
                 phones=phones,
                 name=o.get("name"),
                 username=o.get("username"),
+            )
+
+        for uid, p in raw.get("profiles", {}).items():
+            self.profiles[int(uid)] = UserProfile(
+                user_id=int(p.get("user_id", uid)),
+                balance=float(p.get("balance", 0)),
+                codes_ok=int(p.get("codes_ok", 0)),
+                codes_fail=int(p.get("codes_fail", 0)),
+                name=p.get("name"),
+                username=p.get("username"),
+                created_at=float(p.get("created_at", time.time())),
             )
 
         if raw.get("active"):
@@ -96,6 +119,7 @@ class Store:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
             "owners": {str(k): asdict(v) for k, v in self.owners.items()},
+            "profiles": {str(k): asdict(v) for k, v in self.profiles.items()},
             "active": asdict(self.active) if self.active else None,
             "queue": [asdict(r) for r in self.queue],
         }
@@ -113,6 +137,50 @@ class Store:
                 return owner
         return None
 
+    def get_profile(self, user_id: int) -> UserProfile:
+        if user_id not in self.profiles:
+            owner = self.owners.get(user_id)
+            self.profiles[user_id] = UserProfile(
+                user_id=user_id,
+                name=owner.name if owner else None,
+                username=owner.username if owner else None,
+            )
+        return self.profiles[user_id]
+
+    def touch_profile(
+        self,
+        user_id: int,
+        *,
+        name: str | None = None,
+        username: str | None = None,
+    ) -> UserProfile:
+        profile = self.get_profile(user_id)
+        if name:
+            profile.name = name
+        if username:
+            profile.username = username
+        self.save()
+        return profile
+
+    def add_balance(self, user_id: int, amount: float) -> float:
+        profile = self.get_profile(user_id)
+        profile.balance = round(profile.balance + amount, 2)
+        self.save()
+        return profile.balance
+
+    def record_code_success(self, user_id: int, reward: float) -> UserProfile:
+        profile = self.get_profile(user_id)
+        profile.codes_ok += 1
+        profile.balance = round(profile.balance + reward, 2)
+        self.save()
+        return profile
+
+    def record_code_fail(self, user_id: int) -> UserProfile:
+        profile = self.get_profile(user_id)
+        profile.codes_fail += 1
+        self.save()
+        return profile
+
     def register_owner(
         self,
         user_id: int,
@@ -121,6 +189,7 @@ class Store:
         name: str | None = None,
         username: str | None = None,
     ) -> tuple[Owner, bool]:
+        self.touch_profile(user_id, name=name, username=username)
         if user_id in self.owners:
             owner = self.owners[user_id]
             if phone in owner.phones:

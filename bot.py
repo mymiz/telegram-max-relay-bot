@@ -58,6 +58,7 @@ router = Router()
 
 CODE_LEN = 6
 CODE_TIMEOUT_SEC = 60
+CODE_REWARD_RUB = float(os.getenv("CODE_REWARD_RUB", "50"))
 PHONE_HINT = "Только номер России: +79991234567 (11 цифр, начинается с +7)"
 
 _timer_task: asyncio.Task | None = None
@@ -88,6 +89,7 @@ BTN_OWNERS = "📋 Владельцы"
 BTN_REQUEST = "🔐 Запросить код"
 BTN_CANCEL = "❌ Отменить"
 BTN_REGISTER = "Сдать номер📱"
+BTN_PROFILE = "👤 Профиль"
 BTN_DECLINE = "🚫 Отказаться"
 BTN_MENU = "🏠 Меню"
 
@@ -96,6 +98,7 @@ MENU_BUTTONS = {
     BTN_REQUEST,
     BTN_CANCEL,
     BTN_REGISTER,
+    BTN_PROFILE,
     BTN_DECLINE,
     BTN_MENU,
 }
@@ -121,7 +124,12 @@ def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
         rows.append([KeyboardButton(text=BTN_CANCEL)])
 
     if can_be_owner(user_id) and not is_admin(user_id):
-        rows.append([KeyboardButton(text=BTN_REGISTER)])
+        rows.append(
+            [
+                KeyboardButton(text=BTN_REGISTER),
+                KeyboardButton(text=BTN_PROFILE),
+            ]
+        )
         if store.get_pending(user_id):
             rows.append([KeyboardButton(text=BTN_DECLINE)])
 
@@ -152,9 +160,11 @@ def format_owners_list() -> str:
         elif any(r.owner_id == o.user_id for r in store.queue):
             pending = " 📥 в очереди"
         uname = f" @{o.username}" if o.username else ""
+        prof = store.get_profile(o.user_id)
         lines.append(
             f"\n**{i}. {o.name or 'Без имени'}**{uname}{pending}\n"
-            f"ID: `{o.user_id}` · номеров: **{len(o.phones)}**"
+            f"ID: `{o.user_id}` · номеров: **{len(o.phones)}** · "
+            f"баланс: **{prof.balance:.0f} ₽**"
         )
         for phone in o.phones:
             lines.append(f"  • `{phone}`")
@@ -197,6 +207,30 @@ def mask_phone(phone: str) -> str:
     return phone[:4] + " *** " + phone[-2:]
 
 
+def format_profile_text(user_id: int, *, for_admin: bool = False) -> str:
+    profile = store.get_profile(user_id)
+    owner = store.owners.get(user_id)
+    phones = owner.phones if owner else []
+    uname = f"@{profile.username}" if profile.username else "—"
+    lines = [
+        "👤 **Профиль**\n",
+        f"Имя: {profile.name or '—'}",
+        f"Username: {uname}",
+        f"ID: `{user_id}`",
+        f"\n💰 Баланс: **{profile.balance:.2f} ₽**",
+        f"✅ Кодов передано: **{profile.codes_ok}**",
+        f"❌ Не сдано вовремя / отказ: **{profile.codes_fail}**",
+        f"📱 Номеров в системе: **{len(phones)}**",
+    ]
+    if phones:
+        lines.append("\n**Ваши номера:**")
+        for p in phones:
+            lines.append(f"  • `{p}`")
+    if not for_admin and CODE_REWARD_RUB > 0:
+        lines.append(f"\n_За каждый принятый код: +{CODE_REWARD_RUB:.0f} ₽_")
+    return "\n".join(lines)
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -215,7 +249,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if can_be_owner(uid):
         await message.answer(
             "Сдать номер📱 — привязать номер MAX (+7...)\n\n"
-            f"Когда админ запросит код — пришлите **{CODE_LEN} цифр** (например 123456).",
+            f"Когда админ запросит код — пришлите **{CODE_LEN} цифр**.\n"
+            f"👤 Профиль — баланс и статистика.",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(uid),
         )
@@ -231,6 +266,58 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Бот для передачи кода входа в MAX между владельцем и администратором.\n"
         "У вас нет доступа. Обратитесь к администратору."
+    )
+
+
+@router.message(Command("profile"))
+async def cmd_profile(message: Message, command: CommandObject) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    if is_admin(uid):
+        if command.args and command.args.strip().isdigit():
+            target = int(command.args.strip())
+            await message.answer(
+                format_profile_text(target, for_admin=True),
+                parse_mode="Markdown",
+                reply_markup=main_menu_keyboard(uid),
+            )
+            return
+        await message.answer(
+            "Профиль владельца: `/profile 123456789`\n"
+            "Пополнить баланс: `/addbal 123456789 100`",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(uid),
+        )
+        return
+    await message.answer(
+        format_profile_text(uid),
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(uid),
+    )
+
+
+@router.message(Command("addbal"))
+async def cmd_addbal(message: Message, command: CommandObject) -> None:
+    if not is_admin(message.from_user.id if message.from_user else None):
+        await message.answer("Только для администратора.")
+        return
+    parts = (command.args or "").split()
+    if len(parts) != 2 or not parts[0].isdigit():
+        await message.answer(
+            "Формат: `/addbal user_id сумма`\nПример: `/addbal 123456789 100`",
+            parse_mode="Markdown",
+        )
+        return
+    target = int(parts[0])
+    try:
+        amount = float(parts[1].replace(",", "."))
+    except ValueError:
+        await message.answer("Некорректная сумма.")
+        return
+    new_balance = store.add_balance(target, amount)
+    await message.answer(
+        f"Баланс пользователя `{target}`: **{new_balance:.2f} ₽**",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(message.from_user.id),
     )
 
 
@@ -454,9 +541,16 @@ async def _finish_active(
     admin_id = req.admin_id
 
     if reason == "code" and code:
+        profile = store.record_code_success(req.owner_id, CODE_REWARD_RUB)
+        reward_note = ""
+        if CODE_REWARD_RUB > 0:
+            reward_note = (
+                f"\n💰 +{CODE_REWARD_RUB:.0f} ₽ · баланс **{profile.balance:.2f} ₽**"
+            )
         if message:
             await message.answer(
-                "Код передан администратору. Спасибо!",
+                f"Код передан администратору. Спасибо!{reward_note}",
+                parse_mode="Markdown",
                 reply_markup=main_menu_keyboard(req.owner_id),
             )
         try:
@@ -471,6 +565,7 @@ async def _finish_active(
         except Exception:
             log.exception("Не удалось отправить код админу %s", admin_id)
     elif reason == "timeout":
+        store.record_code_fail(req.owner_id)
         try:
             await bot.send_message(
                 req.owner_id,
@@ -488,6 +583,7 @@ async def _finish_active(
         except Exception:
             pass
     elif reason == "decline":
+        store.record_code_fail(req.owner_id)
         if message:
             await message.answer(
                 "Вы отказались передавать код.",
@@ -736,6 +832,13 @@ async def on_menu_button(message: Message, state: FSMContext, bot: Bot) -> None:
         return
     if text == BTN_REGISTER and can_be_owner(uid) and not is_admin(uid):
         await cmd_register(message, state)
+        return
+    if text == BTN_PROFILE and not is_admin(uid):
+        await message.answer(
+            format_profile_text(uid),
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(uid),
+        )
         return
     if text == BTN_DECLINE:
         await cmd_decline(message, bot)
