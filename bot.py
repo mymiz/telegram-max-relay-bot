@@ -632,7 +632,12 @@ async def _process_next_in_queue(bot: Bot, admin_id: int) -> None:
         nxt = store.pop_next()
         if not nxt:
             try:
-                await bot.send_message(admin_id, "✅ Очередь пуста.")
+                await bot.send_message(
+                    admin_id,
+                    "✅ Очередь обработана\\. Все номера пройдены\\.",
+                    parse_mode="MarkdownV2",
+                    reply_markup=main_menu_keyboard(admin_id),
+                )
             except Exception:
                 pass
             return
@@ -645,6 +650,53 @@ async def _process_next_in_queue(bot: Bot, admin_id: int) -> None:
             )
         except Exception:
             pass
+
+
+async def _queue_all_phones(bot: Bot, admin_id: int, reply_to: Message) -> None:
+    """Добавить все зарегистрированные номера в очередь и запустить обработку."""
+    if not store.owners:
+        await reply_to.answer(
+            "Владельцев нет. Попросите нажать «Сдать номер📱».",
+            reply_markup=main_menu_keyboard(admin_id),
+        )
+        return
+
+    added = 0
+    already = 0
+    for owner in store.owners.values():
+        for phone in owner.phones:
+            status = store.phone_status(phone)
+            if status in ("active", "queued"):
+                already += 1
+                continue
+            req = CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
+            if store.active is None and added == 0:
+                if await _activate_request(bot, req):
+                    added += 1
+                else:
+                    store.push_queue(req)
+                    added += 1
+            else:
+                store.push_queue(req)
+                added += 1
+
+    if added == 0:
+        await reply_to.answer(
+            "Все номера уже в очереди или обрабатываются.",
+            reply_markup=main_menu_keyboard(admin_id),
+        )
+        return
+
+    total = store.queue_size()
+    skip_note = f" · {already} уже в очереди" if already else ""
+    await reply_to.answer(
+        f"📥 Запущена очередь: *{added}* номеров{skip_note}\n"
+        f"Осталось в очереди: *{total}*\n\n"
+        "Каждому владельцу даётся 1 минута на код.\n"
+        "Не ответил — автоматически следующий.",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(admin_id),
+    )
 
 
 async def _finish_active(
@@ -836,18 +888,7 @@ async def cmd_request(message: Message, command: CommandObject, bot: Bot) -> Non
         return
 
     if not command.args:
-        kb = owners_request_inline()
-        if kb:
-            await message.answer(
-                "Выберите владельца или укажите номер:\n`/request +79991234567`",
-                parse_mode="Markdown",
-                reply_markup=kb,
-            )
-        else:
-            await message.answer(
-                "Владельцев пока нет. Попросите нажать «Сдать номер📱».",
-                reply_markup=main_menu_keyboard(admin_id or 0),
-            )
+        await _queue_all_phones(bot, admin_id or 0, message)
         return
 
     phone = normalize_phone(command.args.strip())
@@ -1032,14 +1073,7 @@ async def on_menu_button(message: Message, state: FSMContext, bot: Bot) -> None:
         await cmd_owners(message)
         return
     if text == BTN_REQUEST and is_admin(uid):
-        kb = owners_request_inline()
-        if kb:
-            await message.answer("Выберите номер для запроса кода:", reply_markup=kb)
-        else:
-            await message.answer(
-                "Владельцев пока нет. Попросите нажать «Сдать номер📱».",
-                reply_markup=main_menu_keyboard(uid),
-            )
+        await _queue_all_phones(bot, uid, message)
         return
     if text == BTN_CANCEL:
         await cmd_cancel(message, state)
