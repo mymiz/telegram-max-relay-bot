@@ -142,7 +142,8 @@ def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
                 KeyboardButton(text=BTN_REQUEST),
             ]
         )
-        rows.append([KeyboardButton(text=BTN_CANCEL)])
+        if store.active or store.queue:
+            rows.append([KeyboardButton(text=BTN_CANCEL)])
         rows.append([KeyboardButton(text=BTN_SETTINGS)])
 
     if can_be_owner(user_id) and not is_admin(user_id):
