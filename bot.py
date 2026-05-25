@@ -992,10 +992,9 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
 async def _show_settings(message: Message) -> None:
     status_icon = "✅" if store.bot_status.lower() in ("включён", "включен", "on", "вкл") else "🔴"
     await message.answer(
-        f"⚙️ *Настройки*\n\n"
+        f"⚙️ Настройки\n\n"
         f"Статус: {status_icon} {store.bot_status}\n"
         f"Прайс: {store.price}",
-        parse_mode="Markdown",
         reply_markup=settings_keyboard(),
     )
 
@@ -1008,7 +1007,8 @@ async def settings_price_input(message: Message, state: FSMContext) -> None:
     store.price = text
     store.save()
     await state.clear()
-    await message.answer(f"Прайс обновлён: *{text}*", parse_mode="Markdown")
+    log.info("Прайс обновлён: %s", text)
+    await message.answer(f"Прайс обновлён: {text}")
     await _show_settings(message)
 
 
@@ -1046,11 +1046,13 @@ async def cb_work_toggle(callback: CallbackQuery) -> None:
     value = (callback.data or "").removeprefix("work:")
     store.bot_status = "включён" if value == "on" else "выключен"
     store.save()
-    await callback.answer("Обновлено")
-    if callback.message:
-        await callback.message.edit_reply_markup(reply_markup=work_inline())
     status_icon = "✅" if value == "on" else "🔴"
+    await callback.answer(f"Статус: {store.bot_status}", show_alert=False)
     if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=work_inline())
+        except Exception:
+            pass
         await callback.message.answer(
             f"Статус изменён: {status_icon} {store.bot_status}",
             reply_markup=settings_keyboard(),
