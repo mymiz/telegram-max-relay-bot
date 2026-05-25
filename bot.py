@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import re
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -18,6 +19,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -39,6 +41,8 @@ log = logging.getLogger("telegram-max-relay")
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "").strip() or None
+
+LOGO_PATH = Path(__file__).resolve().parent / "logo.png"
 
 
 def _parse_ids(raw: str) -> set[int]:
@@ -304,6 +308,19 @@ def format_profile_text(user_id: int, *, for_admin: bool = False) -> str:
     return "\n".join(lines)
 
 
+async def _send_welcome(message: Message, uid: int) -> None:
+    kb = main_menu_keyboard(uid)
+    if LOGO_PATH.exists():
+        await message.answer_photo(
+            photo=FSInputFile(LOGO_PATH),
+            caption=welcome_text(),
+            parse_mode="MarkdownV2",
+            reply_markup=kb,
+        )
+    else:
+        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=kb)
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -312,19 +329,11 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         store.track_user(uid)
 
     if is_admin(uid):
-        await message.answer(
-            welcome_text(),
-            parse_mode="MarkdownV2",
-            reply_markup=main_menu_keyboard(uid),
-        )
+        await _send_welcome(message, uid)
         return
 
     if can_be_owner(uid):
-        await message.answer(
-            welcome_text(),
-            parse_mode="MarkdownV2",
-            reply_markup=main_menu_keyboard(uid),
-        )
+        await _send_welcome(message, uid)
         if uid in store.owners:
             o = store.owners[uid]
             phones = "\n".join(f"  • {mask_phone(p)}" for p in o.phones)
