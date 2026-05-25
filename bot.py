@@ -25,7 +25,6 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
 )
 from dotenv import load_dotenv
 
@@ -131,7 +130,10 @@ def settings_keyboard() -> ReplyKeyboardMarkup:
 
 def contact_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
+        keyboard=[
+            [KeyboardButton(text="📱 Отправить номер", request_contact=True)],
+            [KeyboardButton(text=BTN_MENU)],
+        ],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
@@ -405,7 +407,7 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
     existing = store.owner_by_phone(phone)
     if existing and existing.user_id != user.id:
         await message.answer("Этот номер уже зарегистрирован. Обратитесь к администратору.",
-                             reply_markup=ReplyKeyboardRemove())
+                             reply_markup=main_menu_keyboard(user.id))
         await state.clear()
         return
     owner, already = store.register_owner(user.id, phone, name=user.full_name, username=user.username)
