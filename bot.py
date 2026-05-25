@@ -294,10 +294,9 @@ async def _send_welcome(message: Message, uid: int, *, first_time: bool = False)
     kb = main_menu_keyboard(uid)
     if first_time and LOGO_FILE:
         await message.answer_photo(photo=LOGO_FILE, caption=welcome_text(),
-                                   parse_mode="MarkdownV2", reply_markup=_WELCOME_KB)
+                                   parse_mode="MarkdownV2", reply_markup=kb)
     else:
-        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=_WELCOME_KB)
-    await message.answer("👇 Выберите раздел:", reply_markup=kb)
+        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=kb)
 
 # ─── Команды ────────────────────────────────────────────────────────────────
 
