@@ -173,7 +173,6 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     if can_be_owner(uid):
         await message.answer(
-            "Вы — **владелец** (или можете им стать).\n\n"
             "Сдать номер📱 — привязать номер MAX (+7...)\n\n"
             f"Когда админ запросит код — пришлите **{CODE_LEN} цифр** (например 123456).",
             parse_mode="Markdown",
