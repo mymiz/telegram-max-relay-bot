@@ -57,7 +57,10 @@ store = Store()
 router = Router()
 
 CODE_LEN = 6
+CODE_TIMEOUT_SEC = 60
 PHONE_HINT = "Только номер России: +79991234567 (11 цифр, начинается с +7)"
+
+_timer_task: asyncio.Task | None = None
 
 
 class OwnerRegister(StatesGroup):
@@ -143,7 +146,11 @@ def format_owners_list() -> str:
         f"Людей: **{people}** · Номеров: **{total}**\n"
     ]
     for i, o in enumerate(store.owners.values(), 1):
-        pending = " ⏳ ждёт код" if store.get_pending(o.user_id) else ""
+        pending = ""
+        if store.active and store.active.owner_id == o.user_id:
+            pending = f" ⏳ код ({store.seconds_left()} сек)"
+        elif any(r.owner_id == o.user_id for r in store.queue):
+            pending = " 📥 в очереди"
         uname = f" @{o.username}" if o.username else ""
         lines.append(
             f"\n**{i}. {o.name or 'Без имени'}**{uname}{pending}\n"
@@ -151,7 +158,18 @@ def format_owners_list() -> str:
         )
         for phone in o.phones:
             lines.append(f"  • `{phone}`")
-    lines.append("\n🔐 Нажмите кнопку под сообщением, чтобы запросить код.")
+    if store.active:
+        left = store.seconds_left()
+        lines.append(
+            f"\n⏳ **Сейчас в работе:** `{store.active.phone}` — осталось **{left} сек**"
+        )
+    if store.queue:
+        lines.append(f"\n📥 **Очередь** ({store.queue_size()} номеров):")
+        for i, req in enumerate(store.queue[:15], 1):
+            lines.append(f"  {i}. `{req.phone}`")
+        if store.queue_size() > 15:
+            lines.append(f"  … и ещё {store.queue_size() - 15}")
+    lines.append("\n🔐 Кнопки ниже — запросить код (по одному, 1 мин на ответ).")
     return "\n".join(lines)
 
 
@@ -330,6 +348,175 @@ async def cmd_owners(message: Message) -> None:
     )
 
 
+async def _cancel_timer() -> None:
+    global _timer_task
+    if _timer_task and not _timer_task.done():
+        _timer_task.cancel()
+        try:
+            await _timer_task
+        except asyncio.CancelledError:
+            pass
+    _timer_task = None
+
+
+async def _start_code_timer(bot: Bot, req: CodeRequest) -> None:
+    global _timer_task
+
+    async def _on_timeout() -> None:
+        await asyncio.sleep(CODE_TIMEOUT_SEC)
+        active = store.active
+        if not active or active.phone != req.phone:
+            return
+        await _finish_active(bot, reason="timeout")
+
+    await _cancel_timer()
+    _timer_task = asyncio.create_task(_on_timeout())
+
+
+async def _notify_owner_request(bot: Bot, req: CodeRequest) -> bool:
+    try:
+        await bot.send_message(
+            req.owner_id,
+            "🔐 **Запрос кода входа в MAX**\n\n"
+            f"Номер: `{req.phone}`\n"
+            f"⏱ У вас **{CODE_TIMEOUT_SEC} сек** (1 минута), чтобы прислать код.\n\n"
+            f"Отправьте ровно **{CODE_LEN} цифр** в этот чат.\n"
+            "Отказ: 🚫 Отказаться",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(req.owner_id),
+        )
+        return True
+    except Exception:
+        log.exception("Не удалось написать владельцу %s", req.owner_id)
+        return False
+
+
+async def _activate_request(bot: Bot, req: CodeRequest) -> bool:
+    if not await _notify_owner_request(bot, req):
+        return False
+    store.set_active(req, timeout_sec=CODE_TIMEOUT_SEC)
+    await _start_code_timer(bot, req)
+    try:
+        q = store.queue_size()
+        extra = f"\nВ очереди после этого: **{q}**" if q else ""
+        await bot.send_message(
+            req.admin_id,
+            f"⏳ Ожидание кода для `{req.phone}`\n"
+            f"Владельцу дано **{CODE_TIMEOUT_SEC} сек**.{extra}\n"
+            "Запустите вход в MAX на этот номер.",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        log.warning("Не удалось уведомить админа %s", req.admin_id)
+    return True
+
+
+async def _process_next_in_queue(bot: Bot, admin_id: int) -> None:
+    while True:
+        nxt = store.pop_next()
+        if not nxt:
+            try:
+                await bot.send_message(admin_id, "✅ Очередь пуста.")
+            except Exception:
+                pass
+            return
+        if await _activate_request(bot, nxt):
+            return
+        try:
+            await bot.send_message(
+                admin_id,
+                f"⚠️ Пропуск {mask_phone(nxt.phone)} — владелец недоступен.",
+            )
+        except Exception:
+            pass
+
+
+async def _finish_active(
+    bot: Bot,
+    *,
+    reason: str,
+    code: str | None = None,
+    message: Message | None = None,
+) -> None:
+    await _cancel_timer()
+    req = store.clear_active()
+    if not req:
+        return
+
+    owner = store.owners.get(req.owner_id)
+    owner_name = owner.name if owner else str(req.owner_id)
+    admin_id = req.admin_id
+
+    if reason == "code" and code:
+        if message:
+            await message.answer(
+                "Код передан администратору. Спасибо!",
+                reply_markup=main_menu_keyboard(req.owner_id),
+            )
+        try:
+            await bot.send_message(
+                admin_id,
+                "✅ **Код от владельца**\n\n"
+                f"Владелец: {owner_name}\n"
+                f"Номер: `{req.phone}`\n"
+                f"Код: `{code}`",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            log.exception("Не удалось отправить код админу %s", admin_id)
+    elif reason == "timeout":
+        try:
+            await bot.send_message(
+                req.owner_id,
+                f"⏱ Время вышло ({CODE_TIMEOUT_SEC} сек). Код не получен.",
+                reply_markup=main_menu_keyboard(req.owner_id),
+            )
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                admin_id,
+                f"⏱ **Время вышло** для `{req.phone}` — код не прислан за 1 минуту.",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+    elif reason == "decline":
+        if message:
+            await message.answer(
+                "Вы отказались передавать код.",
+                reply_markup=main_menu_keyboard(req.owner_id),
+            )
+        try:
+            await bot.send_message(
+                admin_id,
+                f"🚫 Владелец отказался передавать код для `{req.phone}`.",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+    elif reason == "cancel":
+        try:
+            await bot.send_message(
+                req.owner_id,
+                "Запрос кода отменён администратором.",
+                reply_markup=main_menu_keyboard(req.owner_id),
+            )
+        except Exception:
+            pass
+
+    if store.queue:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"▶️ Следующий в очереди ({store.queue_size()} осталось)…",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+    await _process_next_in_queue(bot, admin_id)
+
+
 async def _do_request(
     bot: Bot, admin_id: int, phone: str, reply_to: Message | None = None
 ) -> bool:
@@ -343,45 +530,52 @@ async def _do_request(
             await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
         return False
 
-    if store.get_pending(owner.user_id):
-        text = "По этому владельцу уже есть активный запрос кода."
+    status = store.phone_status(phone)
+    if status == "active":
+        text = (
+            f"Номер {mask_phone(phone)} уже обрабатывается "
+            f"({store.seconds_left()} сек до конца)."
+        )
+        if reply_to:
+            await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
+        return False
+    if status == "queued":
+        pos = store.queue_position(phone)
+        text = f"Номер {mask_phone(phone)} уже в очереди (позиция {pos})."
         if reply_to:
             await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
         return False
 
-    store.set_pending(
-        CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
-    )
+    req = CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
 
+    if store.active is None:
+        if not await _activate_request(bot, req):
+            if reply_to:
+                await reply_to.answer(
+                    "Не удалось связаться с владельцем.",
+                    reply_markup=main_menu_keyboard(admin_id),
+                )
+            return False
+        text = (
+            f"Запрос для {mask_phone(phone)} активен.\n"
+            f"У владельца **{CODE_TIMEOUT_SEC} сек** на ответ."
+        )
+        if reply_to:
+            await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
+        return True
+
+    pos = store.push_queue(req)
     text = (
-        f"Запрос отправлен владельцу {owner.name or owner.user_id} "
-        f"({mask_phone(phone)}).\n\n"
-        f"Запустите вход в MAX на этот номер. "
-        f"Когда владелец пришлёт код — он появится здесь."
+        f"📥 {mask_phone(phone)} добавлен в **очередь**.\n"
+        f"Позиция: **{pos}** (обработка по одному номеру, 1 мин на код)."
     )
     if reply_to:
         await reply_to.answer(text, reply_markup=main_menu_keyboard(admin_id))
-
-    try:
-        await bot.send_message(
-            owner.user_id,
-            "🔐 **Запрос кода входа в MAX**\n\n"
-            f"Администратор запрашивает код для номера `{phone}`.\n\n"
-            "1. Если вы согласны — дождитесь SMS/кода от MAX\n"
-            f"2. Отправьте код — ровно **{CODE_LEN} цифр** в этот чат\n"
-            "3. Отказ: кнопка 🚫 Отказаться",
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(owner.user_id),
-        )
-    except Exception:
-        log.exception("Не удалось написать владельцу %s", owner.user_id)
-        store.clear_pending(owner.user_id)
-        if reply_to:
-            await reply_to.answer(
-                "Не удалось связаться с владельцем в Telegram.",
-                reply_markup=main_menu_keyboard(admin_id),
-            )
-        return False
+    else:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="Markdown")
+        except Exception:
+            pass
     return True
 
 
@@ -445,59 +639,48 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
     uid = message.from_user.id if message.from_user else None
 
     if is_admin(uid):
-        cancelled = 0
-        for owner_id, req in list(store.pending.items()):
-            if req.admin_id == uid:
-                store.clear_pending(owner_id)
-                cancelled += 1
-                try:
-                    await message.bot.send_message(
-                        owner_id,
-                        "Администратор отменил запрос кода.",
-                    )
-                except Exception:
-                    pass
+        await _cancel_timer()
+        cancelled, was_active = store.cancel_all_for_admin(uid or 0)
+        if was_active:
+            try:
+                await message.bot.send_message(
+                    was_active.owner_id,
+                    "Администратор отменил запрос кода.",
+                    reply_markup=main_menu_keyboard(was_active.owner_id),
+                )
+            except Exception:
+                pass
         await message.answer(
-            f"Отменено запросов: {cancelled}" if cancelled else "Активных запросов нет.",
+            f"Отменено: {cancelled} (очередь и активный запрос)."
+            if cancelled
+            else "Очередь пуста.",
             reply_markup=main_menu_keyboard(uid or 0),
         )
+        if store.active is None and store.queue:
+            await _process_next_in_queue(message.bot, uid or 0)
         return
 
-    req = store.clear_pending(uid or 0)
-    if req:
-        await message.answer(
-            "Ваш запрос кода отменён.",
-            reply_markup=main_menu_keyboard(uid or 0),
-        )
-        try:
-            await message.bot.send_message(req.admin_id, "Владелец отменил передачу кода.")
-        except Exception:
-            pass
-    else:
+    req = store.get_pending(uid or 0)
+    if not req:
         await message.answer(
             "Нет активного запроса.",
             reply_markup=main_menu_keyboard(uid or 0),
         )
+        return
+    await _finish_active(message.bot, reason="decline", message=message)
 
 
 @router.message(Command("decline"))
-async def cmd_decline(message: Message) -> None:
+async def cmd_decline(message: Message, bot: Bot) -> None:
     uid = message.from_user.id if message.from_user else 0
-    req = store.clear_pending(uid)
+    req = store.get_pending(uid)
     if not req:
-        await message.answer("Нет активного запроса.")
-        return
-    await message.answer(
-        "Вы отказались передавать код.",
-        reply_markup=main_menu_keyboard(uid),
-    )
-    try:
-        await message.bot.send_message(
-            req.admin_id,
-            f"Владелец {uid} отказался передавать код для {mask_phone(req.phone)}.",
+        await message.answer(
+            "Сейчас нет активного запроса (или ваша очередь ещё не подошла).",
+            reply_markup=main_menu_keyboard(uid),
         )
-    except Exception:
-        pass
+        return
+    await _finish_active(bot, reason="decline", message=message)
 
 
 @router.message(Command("code"))
@@ -517,7 +700,7 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
         await message.answer(f"Код должен состоять ровно из {CODE_LEN} цифр.")
         return
 
-    await _deliver_code(message, bot, req, code)
+    await _finish_active(bot, reason="code", code=code, message=message)
 
 
 @router.message(F.text.in_(MENU_BUTTONS))
@@ -549,7 +732,7 @@ async def on_menu_button(message: Message, state: FSMContext, bot: Bot) -> None:
         await cmd_register(message, state)
         return
     if text == BTN_DECLINE:
-        await cmd_decline(message)
+        await cmd_decline(message, bot)
         return
 
     await message.answer("Команда недоступна.", reply_markup=main_menu_keyboard(uid))
@@ -578,36 +761,32 @@ async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
         )
         return
 
-    await _deliver_code(message, bot, req, code)
+    await _finish_active(bot, reason="code", code=code, message=message)
 
 
-async def _deliver_code(
-    message: Message, bot: Bot, req: CodeRequest, code: str
-) -> None:
-    owner = store.owners.get(req.owner_id)
-    owner_name = owner.name if owner else str(req.owner_id)
-
-    store.clear_pending(req.owner_id)
-
-    uid = message.from_user.id if message.from_user else 0
-    await message.answer(
-        "Код передан администратору. Спасибо!",
-        reply_markup=main_menu_keyboard(uid),
-    )
-
-    try:
-        await bot.send_message(
-            req.admin_id,
-            "✅ **Код от владельца**\n\n"
-            f"Владелец: {owner_name}\n"
-            f"Номер: `{req.phone}`\n"
-            f"Код: `{code}`\n\n"
-            "_Используйте только с согласия владельца._",
-            parse_mode="Markdown",
-        )
-    except Exception:
-        log.exception("Не удалось отправить код админу %s", req.admin_id)
-        await message.answer("Ошибка доставки админу. Напишите администратору вручную.")
+async def _recover_queue_on_startup(bot: Bot) -> None:
+    if not store.active:
+        if store.queue:
+            admin_id = store.queue[0].admin_id
+            await _process_next_in_queue(bot, admin_id)
+        return
+    left = store.seconds_left()
+    if left <= 0:
+        req = store.clear_active()
+        if req:
+            try:
+                await bot.send_message(
+                    req.admin_id,
+                    f"⏱ После перезапуска: время для `{req.phone}` истекло.",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+        if store.queue:
+            await _process_next_in_queue(bot, store.queue[0].admin_id)
+        return
+    await _start_code_timer(bot, store.active)
+    log.info("Восстановлен активный запрос %s, осталось %s сек", store.active.phone, left)
 
 
 async def main() -> None:
@@ -624,6 +803,7 @@ async def main() -> None:
     if TELEGRAM_PROXY:
         log.info("Используется прокси для Telegram API")
     log.info("Бот запущен. Админы: %s", ADMIN_IDS)
+    await _recover_queue_on_startup(bot)
     await dp.start_polling(bot)
 
 
