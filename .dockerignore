@@ -1,0 +1,10 @@
+.venv
+.env
+.env.*
+!.env.example
+data
+__pycache__
+*.pyc
+.git
+README.md
+DEPLOY.md
