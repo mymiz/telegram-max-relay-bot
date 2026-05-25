@@ -72,6 +72,11 @@ class OwnerSendCode(StatesGroup):
     waiting_code = State()
 
 
+class AdminSettings(StatesGroup):
+    waiting_price = State()
+    waiting_broadcast = State()
+
+
 def is_admin(user_id: int | None) -> bool:
     return user_id is not None and user_id in ADMIN_IDS
 
@@ -93,6 +98,13 @@ BTN_PROFILE = "👤 Профиль"
 BTN_DECLINE = "🚫 Отказаться"
 BTN_MENU = "🏠 Меню"
 
+# Настройки (только для админа)
+BTN_SETTINGS = "⚙️ Настройки"
+BTN_SET_PRICE = "💰 Прайс"
+BTN_SET_WORK = "🔄 Ворк"
+BTN_SET_MSG = "📢 Сообщение"
+BTN_BACK = "◀️ Назад"
+
 MENU_BUTTONS = {
     BTN_OWNERS,
     BTN_REQUEST,
@@ -101,6 +113,11 @@ MENU_BUTTONS = {
     BTN_PROFILE,
     BTN_DECLINE,
     BTN_MENU,
+    BTN_SETTINGS,
+    BTN_SET_PRICE,
+    BTN_SET_WORK,
+    BTN_SET_MSG,
+    BTN_BACK,
 }
 
 
@@ -122,6 +139,7 @@ def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
             ]
         )
         rows.append([KeyboardButton(text=BTN_CANCEL)])
+        rows.append([KeyboardButton(text=BTN_SETTINGS)])
 
     if can_be_owner(user_id) and not is_admin(user_id):
         rows.append(
@@ -136,6 +154,30 @@ def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     rows.append([KeyboardButton(text=BTN_MENU)])
 
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def settings_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_SET_PRICE), KeyboardButton(text=BTN_SET_WORK)],
+            [KeyboardButton(text=BTN_SET_MSG)],
+            [KeyboardButton(text=BTN_BACK)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def work_inline() -> InlineKeyboardMarkup:
+    on_mark = "✅ " if store.bot_status.lower() in ("включён", "включен", "on", "вкл") else ""
+    off_mark = "✅ " if not on_mark else ""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=f"{on_mark}Включен", callback_data="work:on"),
+                InlineKeyboardButton(text=f"{off_mark}Выключен", callback_data="work:off"),
+            ]
+        ]
+    )
 
 
 def contact_keyboard() -> ReplyKeyboardMarkup:
@@ -874,14 +916,120 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
     await _finish_active(bot, reason="code", code=code, message=message)
 
 
+async def _show_settings(message: Message) -> None:
+    status_icon = "✅" if store.bot_status.lower() in ("включён", "включен", "on", "вкл") else "🔴"
+    await message.answer(
+        f"⚙️ *Настройки*\n\n"
+        f"Статус: {status_icon} {store.bot_status}\n"
+        f"Прайс: {store.price}",
+        parse_mode="Markdown",
+        reply_markup=settings_keyboard(),
+    )
+
+
+# ─── FSM: ввод нового прайса ───────────────────────────────────────────────
+
+@router.message(AdminSettings.waiting_price, F.text)
+async def settings_price_input(message: Message, state: FSMContext) -> None:
+    text = message.text or ""
+    if text == BTN_BACK:
+        await state.clear()
+        await _show_settings(message)
+        return
+    if text == BTN_MENU:
+        await state.clear()
+        await cmd_start(message, state)
+        return
+    store.price = text
+    store.save()
+    await state.clear()
+    await message.answer(f"Прайс обновлён: *{text}*", parse_mode="Markdown")
+    await _show_settings(message)
+
+
+# ─── FSM: рассылка сообщения всем участникам ───────────────────────────────
+
+@router.message(AdminSettings.waiting_broadcast, F.text)
+async def settings_broadcast_input(message: Message, state: FSMContext, bot: Bot) -> None:
+    text = message.text or ""
+    if text == BTN_BACK:
+        await state.clear()
+        await _show_settings(message)
+        return
+    if text == BTN_MENU:
+        await state.clear()
+        await cmd_start(message, state)
+        return
+
+    recipients = set(store.owners.keys())
+    ok = 0
+    fail = 0
+    for uid in recipients:
+        try:
+            await bot.send_message(uid, text)
+            ok += 1
+        except Exception:
+            fail += 1
+
+    await state.clear()
+    await message.answer(
+        f"Рассылка завершена: {ok} доставлено, {fail} ошибок.",
+        reply_markup=settings_keyboard(),
+    )
+
+
+# ─── Callback: переключение Ворк ───────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("work:"))
+async def cb_work_toggle(callback: CallbackQuery) -> None:
+    if not callback.from_user or not is_admin(callback.from_user.id):
+        await callback.answer("Только для администратора", show_alert=True)
+        return
+    value = (callback.data or "").removeprefix("work:")
+    store.bot_status = "включён" if value == "on" else "выключен"
+    store.save()
+    await callback.answer("Обновлено")
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=work_inline())
+    status_icon = "✅" if value == "on" else "🔴"
+    if callback.message:
+        await callback.message.answer(
+            f"Статус изменён: {status_icon} {store.bot_status}",
+            reply_markup=settings_keyboard(),
+        )
+
+
 @router.message(F.text.in_(MENU_BUTTONS))
 async def on_menu_button(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.clear()
     uid = message.from_user.id if message.from_user else 0
     text = message.text or ""
 
-    if text == BTN_MENU:
+    if text in (BTN_MENU, BTN_BACK):
         await cmd_start(message, state)
+        return
+    if text == BTN_SETTINGS and is_admin(uid):
+        await _show_settings(message)
+        return
+    if text == BTN_SET_PRICE and is_admin(uid):
+        await state.set_state(AdminSettings.waiting_price)
+        await message.answer(
+            "Введите новый текст прайса:",
+            reply_markup=settings_keyboard(),
+        )
+        return
+    if text == BTN_SET_WORK and is_admin(uid):
+        await message.answer(
+            "Выберите статус работы:",
+            reply_markup=work_inline(),
+        )
+        return
+    if text == BTN_SET_MSG and is_admin(uid):
+        await state.set_state(AdminSettings.waiting_broadcast)
+        await message.answer(
+            "Введите сообщение для рассылки всем участникам:",
+            reply_markup=settings_keyboard(),
+        )
         return
     if text == BTN_OWNERS and is_admin(uid):
         await cmd_owners(message)
