@@ -63,6 +63,7 @@ class Store:
         self.queue: list[CodeRequest] = []
         self.bot_status: str = "включён"
         self.price: str = "не указан"
+        self.all_users: set[int] = set()
         self._load()
 
     def _load(self) -> None:
@@ -98,6 +99,7 @@ class Store:
         self.queue = [self._req_from_dict(r) for r in raw.get("queue", [])]
         self.bot_status = raw.get("bot_status", "включён")
         self.price = raw.get("price", "не указан")
+        self.all_users = set(int(u) for u in raw.get("all_users", []))
 
         # Старый формат: pending → в очередь
         for p in raw.get("pending", {}).values():
@@ -128,11 +130,17 @@ class Store:
             "queue": [asdict(r) for r in self.queue],
             "bot_status": self.bot_status,
             "price": self.price,
+            "all_users": list(self.all_users),
         }
         STORE_FILE.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def track_user(self, user_id: int) -> None:
+        if user_id not in self.all_users:
+            self.all_users.add(user_id)
+            self.save()
 
     def total_phones(self) -> int:
         return sum(len(o.phones) for o in self.owners.values())

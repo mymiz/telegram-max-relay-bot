@@ -308,6 +308,8 @@ def format_profile_text(user_id: int, *, for_admin: bool = False) -> str:
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     uid = message.from_user.id if message.from_user else 0
+    if uid:
+        store.track_user(uid)
 
     if is_admin(uid):
         await message.answer(
@@ -961,7 +963,8 @@ async def settings_broadcast_input(message: Message, state: FSMContext, bot: Bot
         await cmd_start(message, state)
         return
 
-    recipients = set(store.owners.keys())
+    sender_id = message.from_user.id if message.from_user else 0
+    recipients = store.all_users - {sender_id}
     ok = 0
     fail = 0
     for uid in recipients:
