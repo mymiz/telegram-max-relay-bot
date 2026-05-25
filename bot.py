@@ -330,9 +330,16 @@ async def _send_welcome(message: Message, uid: int) -> None:
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    uid = message.from_user.id if message.from_user else 0
-    if uid:
+    user = message.from_user
+    uid = user.id if user else 0
+    if uid and user:
         store.track_user(uid)
+        store.touch_profile(uid, name=user.full_name, username=user.username)
+        if uid in store.owners:
+            owner = store.owners[uid]
+            owner.name = user.full_name
+            owner.username = user.username
+            store.save()
 
     if is_admin(uid):
         await _send_welcome(message, uid)
