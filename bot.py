@@ -22,10 +22,7 @@ from aiogram.types import (
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     Message,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
 )
 from dotenv import load_dotenv
 
@@ -148,13 +145,6 @@ def work_inline() -> InlineKeyboardMarkup:
     ])
 
 
-def contact_keyboard() -> ReplyKeyboardMarkup:
-    """Используется только для запроса контакта при регистрации номера."""
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
 
 
 # ─── Форматирование ─────────────────────────────────────────────────────────
@@ -299,12 +289,6 @@ _INSTRUCTION_TEXT = """🎓 *ГЛАВНАЯ ИНСТРУКЦИЯ TrustMax\\_Bot*
 # ─── Отправка меню ──────────────────────────────────────────────────────────
 
 async def _send_welcome(message: Message, uid: int, *, first_time: bool = False) -> None:
-    # Убираем старую reply-клавиатуру, если она осталась
-    try:
-        rm = await message.answer(".", reply_markup=ReplyKeyboardRemove())
-        await rm.delete()
-    except Exception:
-        pass
     kb = admin_menu_inline() if is_admin(uid) else owner_menu_inline()
     if first_time and LOGO_FILE:
         await message.answer_photo(photo=LOGO_FILE, caption=welcome_text(),
@@ -410,23 +394,7 @@ async def cmd_register(message: Message, state: FSMContext) -> None:
         await message.answer("Регистрация отключена для вашего аккаунта.")
         return
     await state.set_state(OwnerRegister.waiting_phone)
-    await message.answer(
-        f"Отправьте номер MAX:\n• кнопкой ниже, или\n• текстом: {PHONE_HINT}",
-        reply_markup=contact_keyboard(),
-    )
-
-
-@router.message(OwnerRegister.waiting_phone, F.contact)
-async def register_contact(message: Message, state: FSMContext) -> None:
-    contact = message.contact
-    if not contact or not contact.phone_number:
-        await message.answer("Не удалось прочитать номер.")
-        return
-    phone = normalize_phone(contact.phone_number)
-    if not phone:
-        await message.answer(PHONE_HINT)
-        return
-    await _finish_register(message, state, phone)
+    await message.answer(f"Введите номер MAX:\n{PHONE_HINT}")
 
 
 @router.message(OwnerRegister.waiting_phone, F.text)
@@ -435,7 +403,7 @@ async def register_text(message: Message, state: FSMContext) -> None:
         return
     phone = normalize_phone(message.text)
     if not phone:
-        await message.answer(PHONE_HINT, reply_markup=contact_keyboard())
+        await message.answer(PHONE_HINT)
         return
     await _finish_register(message, state, phone)
 
@@ -447,23 +415,18 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
     existing = store.owner_by_phone(phone)
     if existing and existing.user_id != user.id:
         await state.clear()
-        await message.answer("Этот номер уже зарегистрирован. Обратитесь к администратору.",
-                             reply_markup=ReplyKeyboardRemove())
+        await message.answer("Этот номер уже зарегистрирован. Обратитесь к администратору.")
         await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=owner_menu_inline())
         return
     owner, already = store.register_owner(user.id, phone, name=user.full_name, username=user.username)
     await state.clear()
     if already:
-        await message.answer(
-            f"Номер {mask_phone(phone)} уже в вашем списке ({len(owner.phones)} всего).",
-            reply_markup=ReplyKeyboardRemove(),
-        )
+        await message.answer(f"Номер {mask_phone(phone)} уже в вашем списке ({len(owner.phones)} всего).")
         await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=owner_menu_inline())
         return
     await message.answer(
         f"Номер {mask_phone(phone)} сохранён. Всего: {len(owner.phones)}.\n"
-        "Когда нужен код — получите уведомление.",
-        reply_markup=ReplyKeyboardRemove(),
+        "Когда нужен код — получите уведомление."
     )
     await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=owner_menu_inline())
     for admin_id in ADMIN_IDS:
@@ -721,10 +684,7 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
             await callback.answer("Недоступно", show_alert=True)
             return
         await state.set_state(OwnerRegister.waiting_phone)
-        await msg.answer(
-            f"Отправьте номер MAX:\n• кнопкой ниже, или\n• текстом: {PHONE_HINT}",
-            reply_markup=contact_keyboard(),
-        )
+        await msg.answer(f"Введите номер MAX:\n{PHONE_HINT}")
 
     elif action == "queue":
         in_queue  = sum(1 for r in store.queue if r.owner_id == uid)
