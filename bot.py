@@ -262,15 +262,14 @@ def _esc(text: str) -> str:
 
 
 def format_queue_status() -> str:
-    if store.active is None and not store.queue:
-        return "пусто"
-    parts = []
-    if store.active:
-        parts.append(f"{mask_phone(store.active.phone)} обрабатывается ({store.seconds_left()} сек)")
+    active = 1 if store.active else 0
     q = store.queue_size()
-    if q:
-        parts.append(f"{q} в очереди")
-    return " · ".join(parts)
+    total = active + q
+    if total == 0:
+        return "пусто"
+    if active:
+        return f"{total} номеров (обрабатывается + {q} в очереди)" if q else "1 номер обрабатывается"
+    return f"{q} номеров в очереди"
 
 
 def welcome_text() -> str:
