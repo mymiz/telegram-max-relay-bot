@@ -258,18 +258,45 @@ def format_profile_text(user_id: int) -> str:
 
 # ─── Отправка меню ──────────────────────────────────────────────────────────
 
-_SUPPORT_KB = InlineKeyboardMarkup(inline_keyboard=[[
+_WELCOME_KB = InlineKeyboardMarkup(inline_keyboard=[[
+    InlineKeyboardButton(text="📖 Инструкция", callback_data="show:instruction"),
     InlineKeyboardButton(text="🛠 Тех. поддержка", url="https://t.me/Don1_Tomas1"),
 ]])
+
+_INSTRUCTION_TEXT = """🎓 *ГЛАВНАЯ ИНСТРУКЦИЯ TrustMax\\_Bot*
+
+Добро пожаловать в команду\\! Внимательно изучи правила, чтобы рубить кэш без ошибок\\! 💸
+
+*1️⃣ КАК СДАТЬ НОМЕР?*
+• Нажмите «Сдать номер📱» в меню\\.
+• Формат: \\+79998887766 \\(начинается с \\+, 11 цифр\\)\\.
+
+*2️⃣ ОЧЕРЕДЬ 🎰*
+• Отслеживай свою очередь в главном меню — поле «Актуальная очередь»\\.
+
+*3️⃣ ПРИЁМ КОДОВ ✉️*
+• Как только оператор возьмёт номер — бот пришлёт уведомление\\.
+• Введи код в чат\\. У тебя ровно *1 минута*\\.
+• Если не успел — номер переходит к следующему в очереди\\.
+
+*4️⃣ ОПЛАТА 💰*
+• Если код верный — деньги автоматически падают на баланс\\.
+• Вывод от 1$\\. Выплачиваем быстро\\! 🚀
+
+*5️⃣ ШТРАФЫ ⚠️*
+• Не ответил вовремя или отказался — фиксируется ошибка\\.
+• Следи за статистикой в разделе «👤 Профиль»\\.
+
+Удачи и больше профитов\\! 🍀"""
 
 
 async def _send_welcome(message: Message, uid: int, *, first_time: bool = False) -> None:
     kb = main_menu_keyboard(uid)
     if first_time and LOGO_FILE:
         await message.answer_photo(photo=LOGO_FILE, caption=welcome_text(),
-                                   parse_mode="MarkdownV2", reply_markup=_SUPPORT_KB)
+                                   parse_mode="MarkdownV2", reply_markup=_WELCOME_KB)
     else:
-        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=_SUPPORT_KB)
+        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=_WELCOME_KB)
     await message.answer("👇 Выберите раздел:", reply_markup=kb)
 
 # ─── Команды ────────────────────────────────────────────────────────────────
@@ -658,6 +685,12 @@ async def _do_request(bot: Bot, admin_id: int, phone: str, reply_to: Message | N
     return True
 
 # ─── Callbacks ──────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "show:instruction")
+async def cb_instruction(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.answer(_INSTRUCTION_TEXT, parse_mode="MarkdownV2")
+
 
 @router.callback_query(F.data.startswith("req:"))
 async def cb_request_code(callback: CallbackQuery, bot: Bot) -> None:
