@@ -289,6 +289,52 @@ class Store:
 
     # ── сохранение ────────────────────────────────────────────────────────────
 
+    def _write_profile(self, p: "UserProfile") -> None:
+        """Targeted upsert for a single profile — avoids full-table save."""
+        with self._db:
+            self._db.execute(
+                """INSERT INTO profiles
+                   (user_id, balance, codes_ok, codes_fail, total_earned,
+                    withdrawn, name, username, created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                   balance=excluded.balance, codes_ok=excluded.codes_ok,
+                   codes_fail=excluded.codes_fail, total_earned=excluded.total_earned,
+                   withdrawn=excluded.withdrawn, name=excluded.name,
+                   username=excluded.username, created_at=excluded.created_at""",
+                (p.user_id, p.balance, p.codes_ok, p.codes_fail,
+                 p.total_earned, p.withdrawn, p.name, p.username, p.created_at),
+            )
+
+    def _write_setting(self, key: str, value: str) -> None:
+        """Targeted write for a single settings row."""
+        with self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)",
+                (key, value),
+            )
+
+    def set_bot_status(self, value: str) -> None:
+        self.bot_status = value
+        self._write_setting("bot_status", value)
+
+    def set_price(self, value: str) -> None:
+        self.price = value
+        self._write_setting("price", value)
+
+    def update_owner_info(self, uid: int, name: str | None, username: str | None) -> None:
+        """Update owner name/username in memory and DB without a full save."""
+        owner = self.owners.get(uid)
+        if not owner:
+            return
+        owner.name = name
+        owner.username = username
+        with self._db:
+            self._db.execute(
+                "UPDATE owners SET name=?, username=? WHERE user_id=?",
+                (name, username, uid),
+            )
+
     def save(self) -> None:
         with self._db:
             self._db.execute("DELETE FROM owner_phones")
@@ -394,13 +440,13 @@ class Store:
             profile.name = name
         if username:
             profile.username = username
-        self.save()
+        self._write_profile(profile)
         return profile
 
     def add_balance(self, user_id: int, amount: float) -> float:
         profile = self.get_profile(user_id)
         profile.balance = round(profile.balance + amount, 2)
-        self.save()
+        self._write_profile(profile)
         return profile.balance
 
     def record_code_success(self, user_id: int, reward: float) -> UserProfile:
@@ -408,13 +454,13 @@ class Store:
         profile.codes_ok += 1
         profile.balance = round(profile.balance + reward, 2)
         profile.total_earned = round(profile.total_earned + reward, 2)
-        self.save()
+        self._write_profile(profile)
         return profile
 
     def record_code_fail(self, user_id: int) -> UserProfile:
         profile = self.get_profile(user_id)
         profile.codes_fail += 1
-        self.save()
+        self._write_profile(profile)
         return profile
 
     def register_owner(
