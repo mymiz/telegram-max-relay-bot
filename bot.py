@@ -666,11 +666,15 @@ async def _queue_all_phones(bot: Bot, admin_id: int, msg: Message) -> None:
         await _edit_or_answer(msg, "Владельцев нет.", reply_markup=admin_menu_inline())
         return
 
-    added = already = 0
+    added = already = cooldown = 0
     for owner in store.owners.values():
         for phone in owner.phones:
-            if store.phone_status(phone) in ("active", "queued"):
+            status = store.phone_status(phone)
+            if status in ("active", "queued"):
                 already += 1
+                continue
+            if status == "cooldown":
+                cooldown += 1
                 continue
             req = CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
             if store.active is None and added == 0:
@@ -680,10 +684,22 @@ async def _queue_all_phones(bot: Bot, admin_id: int, msg: Message) -> None:
             added += 1
 
     if added == 0:
-        await _edit_or_answer(msg, "Все номера уже в очереди.", reply_markup=admin_menu_inline())
+        parts = []
+        if already:
+            parts.append(f"{already} уже в очереди")
+        if cooldown:
+            parts.append(f"{cooldown} на кулдауне до завтра")
+        note = " · " + ", ".join(parts) if parts else ""
+        await _edit_or_answer(msg, f"Нет доступных номеров.{note}",
+                              reply_markup=admin_menu_inline())
         return
 
-    note = f" · {already} уже в очереди" if already else ""
+    parts = []
+    if already:
+        parts.append(f"{already} уже в очереди")
+    if cooldown:
+        parts.append(f"🕐 {cooldown} на кулдауне")
+    note = " · " + ", ".join(parts) if parts else ""
     await _edit_or_answer(
         msg,
         f"📥 Запущено: *{added}* номеров{note}. В очереди: *{store.queue_size()}*",
@@ -705,6 +721,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
 
     if reason == "code" and code:
         profile = store.record_code_success(req.owner_id, CODE_REWARD)
+        store.record_phone_success(req.phone)
         note = f"\n💰 +{CODE_REWARD:.0f}$ · баланс *{profile.balance:.2f}$*" if CODE_REWARD > 0 else ""
         if message:
             await message.answer(f"✅ Код передан. Спасибо!{note}",
@@ -773,6 +790,11 @@ async def _do_request(bot: Bot, admin_id: int, phone: str, reply_to: Message | N
         if reply_to:
             await reply_to.answer(
                 f"{mask_phone(phone)} в очереди (позиция {store.queue_position(phone)}).")
+        return False
+    if status == "cooldown":
+        if reply_to:
+            await reply_to.answer(
+                f"🕐 {mask_phone(phone)} уже обработан сегодня. Повторно — завтра.")
         return False
 
     req = CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
@@ -960,7 +982,7 @@ async def cb_queue(callback: CallbackQuery) -> None:
                  f"Всего номеров: *{len(phones)}*\n"]
         for phone in phones:
             status = store.phone_status(phone)
-            icon   = "⏳" if status == "active" else ("📥" if status == "queued" else "✅")
+            icon   = "⏳" if status == "active" else ("📥" if status == "queued" else ("🕐" if status == "cooldown" else "✅"))
             lines.append(f"{icon} `{mask_phone(phone)}`")
         lines.append(f"\nВ очереди: *{in_queue}* · В обработке: *{in_active}*")
         await _edit_or_answer(msg, "\n".join(lines), parse_mode="Markdown",

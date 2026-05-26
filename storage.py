@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
@@ -70,6 +71,11 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS all_users (
     user_id INTEGER PRIMARY KEY
 );
+
+CREATE TABLE IF NOT EXISTS phone_cooldowns (
+    phone        TEXT PRIMARY KEY,
+    last_success TEXT NOT NULL
+);
 """
 
 
@@ -124,6 +130,7 @@ class Store:
         self.bot_status: str = "включён"
         self.price: str = "не указан"
         self.all_users: set[int] = set()
+        self.phone_cooldowns: dict[str, str] = {}  # phone -> "YYYY-MM-DD"
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(DB_FILE), check_same_thread=False)
         self._db.executescript(_DDL)
@@ -186,6 +193,11 @@ class Store:
 
         self.all_users = {
             r[0] for r in self._db.execute("SELECT user_id FROM all_users")
+        }
+
+        self.phone_cooldowns = {
+            r[0]: r[1]
+            for r in self._db.execute("SELECT phone, last_success FROM phone_cooldowns")
         }
 
     def _migrate_from_json(self) -> None:
@@ -423,11 +435,28 @@ class Store:
             return True
         return any(r.phone == phone for r in self.queue)
 
-    def phone_status(self, phone: str) -> Literal["free", "active", "queued"] | None:
+    def is_phone_on_cooldown(self, phone: str) -> bool:
+        """True если номер уже был успешно обработан сегодня (UTC-сутки)."""
+        last = self.phone_cooldowns.get(phone)
+        return last == date.today().isoformat() if last else False
+
+    def record_phone_success(self, phone: str) -> None:
+        """Фиксируем успешную обработку номера — следующая доступна завтра."""
+        today = date.today().isoformat()
+        self.phone_cooldowns[phone] = today
+        with self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO phone_cooldowns(phone, last_success) VALUES(?,?)",
+                (phone, today),
+            )
+
+    def phone_status(self, phone: str) -> Literal["free", "active", "queued", "cooldown"]:
         if self.active and self.active.phone == phone:
             return "active"
         if any(r.phone == phone for r in self.queue):
             return "queued"
+        if self.is_phone_on_cooldown(phone):
+            return "cooldown"
         return "free"
 
     def queue_position(self, phone: str) -> int:
