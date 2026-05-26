@@ -1197,6 +1197,14 @@ async def main() -> None:
         raise SystemExit("Задайте TELEGRAM_BOT_TOKEN в .env")
     if not ADMIN_IDS:
         raise SystemExit("Задайте ADMIN_USER_IDS в .env")
+    # Запуск на Railway определяется наличием RAILWAY_ENVIRONMENT.
+    # Локально бот не стартует — требуется ALLOW_LOCAL=1 в .env
+    if not os.getenv("RAILWAY_ENVIRONMENT") and not os.getenv("ALLOW_LOCAL"):
+        raise SystemExit(
+            "⛔ Локальный запуск заблокирован.\n"
+            "Бот работает на Railway. Если нужен локальный запуск — "
+            "добавьте ALLOW_LOCAL=1 в файл .env"
+        )
 
     session   = AiohttpSession(proxy=TELEGRAM_PROXY) if TELEGRAM_PROXY else AiohttpSession()
     bot       = Bot(token=BOT_TOKEN, session=session)
