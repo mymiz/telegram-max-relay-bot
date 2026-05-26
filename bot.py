@@ -931,22 +931,39 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
 
     elif action == "reset_queue":
         await _cancel_timer()
-        had_active = store.active is not None
-        if had_active:
-            try:
-                await callback.bot.send_message(store.active.owner_id,
-                                                "Запрос кода отменён администратором.")
-            except Exception:
-                pass
-        store.clear_active()
-        queue_count = len(store.queue)
+
+        # Собираем уникальных владельцев, которых нужно уведомить
+        owners_to_notify: set[int] = set()
+        if store.active:
+            owners_to_notify.add(store.active.owner_id)
+        for req in store.queue:
+            owners_to_notify.add(req.owner_id)
+
+        had_active   = store.active is not None
+        queue_count  = len(store.queue)
+
+        # Чистим состояние до уведомлений, чтобы не было гонок
+        store.active = None
         store.queue.clear()
         store.save()
+
+        # Уведомляем каждого владельца один раз
+        for owner_id in owners_to_notify:
+            try:
+                await callback.bot.send_message(
+                    owner_id,
+                    "🗑 Очередь полностью сброшена администратором.\n"
+                    "Все запросы кода отменены.",
+                )
+            except Exception:
+                pass
+
         await _edit_or_answer(
             msg,
             f"🗑 *Очередь сброшена*\n\n"
             f"Активный запрос отменён: *{'да' if had_active else 'нет'}*\n"
-            f"Удалено из очереди: *{queue_count}*",
+            f"Удалено из очереди: *{queue_count}*\n"
+            f"Уведомлено владельцев: *{len(owners_to_notify)}*",
             parse_mode="Markdown",
             reply_markup=settings_inline(),
         )
