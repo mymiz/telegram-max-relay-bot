@@ -151,6 +151,10 @@ def work_inline() -> InlineKeyboardMarkup:
 
 
 
+_CANCEL_KB = InlineKeyboardMarkup(inline_keyboard=[[
+    InlineKeyboardButton(text="❌ Отменить", callback_data="reg:cancel"),
+]])
+
 # ─── Форматирование ─────────────────────────────────────────────────────────
 
 _MDV2 = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
@@ -382,7 +386,7 @@ async def cmd_register(message: Message, state: FSMContext) -> None:
         await message.answer("🔴 Бот временно выключен. Регистрация недоступна.")
         return
     await state.set_state(OwnerRegister.waiting_phone)
-    await message.answer(f"Введите номер MAX:\n{PHONE_HINT}")
+    await message.answer(f"Введите номер MAX:\n{PHONE_HINT}", reply_markup=_CANCEL_KB)
 
 
 @router.message(OwnerRegister.waiting_phone, F.text)
@@ -652,6 +656,14 @@ async def _do_request(bot: Bot, admin_id: int, phone: str, reply_to: Message | N
 # ─── Callbacks ──────────────────────────────────────────────────────────────
 
 
+@router.callback_query(F.data == "reg:cancel")
+async def cb_reg_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer("Отменено")
+    uid = callback.from_user.id if callback.from_user else 0
+    await _send_welcome(callback.message, uid)
+
+
 @router.callback_query(F.data.startswith("menu:"))
 async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await callback.answer()
@@ -675,7 +687,7 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
             await callback.answer("Недоступно", show_alert=True)
             return
         await state.set_state(OwnerRegister.waiting_phone)
-        await msg.answer(f"Введите номер MAX:\n{PHONE_HINT}")
+        await msg.answer(f"Введите номер MAX:\n{PHONE_HINT}", reply_markup=_CANCEL_KB)
 
     elif action == "queue":
         in_queue  = sum(1 for r in store.queue if r.owner_id == uid)
