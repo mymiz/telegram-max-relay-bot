@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -22,6 +23,7 @@ from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
+    InaccessibleMessage,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -53,11 +55,12 @@ OWNER_WHITELIST = _parse_ids(os.getenv("OWNER_USER_IDS", ""))
 store  = Store()
 router = Router()
 
-CODE_LEN        = 6
-CODE_TIMEOUT_SEC = 60
-CODE_REWARD     = float(os.getenv("CODE_REWARD_RUB", "50"))
-RATE_LIMIT      = float(os.getenv("RATE_LIMIT_SEC", "1.0"))
-PHONE_HINT      = "Только номер России: +79991234567 (11 цифр, начинается с +7)"
+CODE_LEN          = 6
+CODE_TIMEOUT_SEC  = 60
+CODE_REWARD       = float(os.getenv("CODE_REWARD_RUB", "50"))
+RATE_LIMIT        = float(os.getenv("RATE_LIMIT_SEC", "1.0"))
+CALLBACK_RATE     = float(os.getenv("CALLBACK_RATE_SEC", "0.3"))
+PHONE_HINT        = "Только номер России: +79991234567 (11 цифр, начинается с +7)"
 
 _timer_task: asyncio.Task | None = None
 
@@ -319,15 +322,29 @@ def format_profile_text(user_id: int) -> str:
 
 # ─── Хелпер редактирования ──────────────────────────────────────────────────
 
-async def _edit_or_answer(msg: Message, text: str, *,
-                          parse_mode: str | None = None,
-                          reply_markup: InlineKeyboardMarkup | None = None) -> Message:
+async def _edit_or_answer(
+    msg: Message | InaccessibleMessage | None,
+    text: str,
+    *,
+    parse_mode: str | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> Message | None:
     """Редактирует сообщение если возможно, иначе отправляет новое.
-    Всегда возвращает итоговый Message (нужен для сохранения msg_id в FSM)."""
+    Возвращает None если сообщение недоступно."""
+    if not isinstance(msg, Message):
+        return None
     try:
         return await msg.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return msg  # содержимое не изменилось — дубликат не нужен
+        # другие ошибки (например, сообщение устарело) — отправляем новое
     except Exception:
+        pass
+    try:
         return await msg.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception:
+        return None
 
 
 # ─── Отправка меню ──────────────────────────────────────────────────────────
@@ -342,13 +359,13 @@ async def _send_welcome(message: Message, uid: int, *, first_time: bool = False)
         await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=kb)
 
 
-async def _show_menu(msg: Message, uid: int) -> None:
+async def _show_menu(msg: Message | InaccessibleMessage | None, uid: int) -> None:
     """Редактирует текущее сообщение под меню (используется из callbacks)."""
     kb = admin_menu_inline() if is_admin(uid) else owner_menu_inline()
     await _edit_or_answer(msg, welcome_text(), parse_mode="MarkdownV2", reply_markup=kb)
 
 
-async def _show_settings(msg: Message) -> None:
+async def _show_settings(msg: Message | InaccessibleMessage | None) -> None:
     icon = "✅" if is_bot_active() else "🔴"
     await _edit_or_answer(
         msg,
@@ -777,8 +794,9 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
         await state.set_state(OwnerRegister.waiting_phone)
         result = await _edit_or_answer(msg, f"📱 Введите номер MAX:\n{PHONE_HINT}",
                                        reply_markup=_CANCEL_KB)
-        await state.update_data(prompt_msg_id=result.message_id,
-                                prompt_chat_id=result.chat.id)
+        if result:
+            await state.update_data(prompt_msg_id=result.message_id,
+                                    prompt_chat_id=result.chat.id)
 
     elif action == "queue":
         await _edit_or_answer(msg, "⏳ *Очередь*\n\nВыберите раздел:",
@@ -895,7 +913,9 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(AdminSettings.waiting_price)
         result = await _edit_or_answer(msg, "💰 Введите новый текст прайса:",
                                        reply_markup=settings_inline())
-        await state.update_data(prompt_msg_id=result.message_id, prompt_chat_id=result.chat.id)
+        if result:
+            await state.update_data(prompt_msg_id=result.message_id,
+                                    prompt_chat_id=result.chat.id)
 
     elif action == "work":
         await _edit_or_answer(msg, "🔄 Выберите статус работы:", reply_markup=work_inline())
@@ -904,7 +924,9 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(AdminSettings.waiting_broadcast)
         result = await _edit_or_answer(msg, "📢 Введите сообщение для рассылки:",
                                        reply_markup=settings_inline())
-        await state.update_data(prompt_msg_id=result.message_id, prompt_chat_id=result.chat.id)
+        if result:
+            await state.update_data(prompt_msg_id=result.message_id,
+                                    prompt_chat_id=result.chat.id)
 
     elif action == "reset_queue":
         await _cancel_timer()
@@ -941,10 +963,15 @@ async def cb_request_code(callback: CallbackQuery, bot: Bot) -> None:
     if not phone:
         await callback.answer("Некорректный номер", show_alert=True)
         return
-    if not await _do_request(bot, callback.from_user.id, phone, None):
-        await callback.answer("Не удалось отправить запрос", show_alert=True)
+    # Отвечаем на callback до долгих операций — Telegram не будет ждать
+    await callback.answer()
+    ok = await _do_request(bot, callback.from_user.id, phone, None)
+    if not ok:
+        try:
+            await callback.answer("Не удалось отправить запрос", show_alert=True)
+        except Exception:
+            pass
         return
-    await callback.answer("Запрос отправлен")
     if callback.message:
         await _edit_or_answer(callback.message, f"Запрос для {mask_phone(phone)} отправлен.",
                               reply_markup=admin_menu_inline())
@@ -1149,9 +1176,10 @@ async def main() -> None:
     bot       = Bot(token=BOT_TOKEN, session=session)
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     dp        = Dispatcher(storage=RedisStorage.from_url(redis_url))
-    throttle  = ThrottleMiddleware(rate=RATE_LIMIT)
-    dp.message.middleware(throttle)
-    dp.callback_query.middleware(throttle)
+    # Два отдельных экземпляра — независимые счётчики и разные интервалы:
+    # сообщения защищены от спама (1.0с), кнопки реагируют быстро (0.3с)
+    dp.message.middleware(ThrottleMiddleware(rate=RATE_LIMIT))
+    dp.callback_query.middleware(ThrottleMiddleware(rate=CALLBACK_RATE))
     dp.include_router(router)
 
     log.info("Бот запущен. Админы: %s", ADMIN_IDS)
