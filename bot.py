@@ -9,9 +9,11 @@ import asyncio
 import logging
 import os
 import re
+import time
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
@@ -23,6 +25,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    TelegramObject,
 )
 from dotenv import load_dotenv
 
@@ -53,9 +56,38 @@ router = Router()
 CODE_LEN        = 6
 CODE_TIMEOUT_SEC = 60
 CODE_REWARD     = float(os.getenv("CODE_REWARD_RUB", "50"))
+RATE_LIMIT      = float(os.getenv("RATE_LIMIT_SEC", "1.0"))
 PHONE_HINT      = "Только номер России: +79991234567 (11 цифр, начинается с +7)"
 
 _timer_task: asyncio.Task | None = None
+
+
+class ThrottleMiddleware(BaseMiddleware):
+    """Ограничение частоты запросов: RATE_LIMIT_SEC секунд между действиями."""
+
+    def __init__(self, rate: float = 1.0) -> None:
+        self.rate = rate
+        self._last: dict[int, float] = {}
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user = getattr(event, "from_user", None)
+        if user and not is_admin(user.id):
+            now  = time.monotonic()
+            last = self._last.get(user.id, 0.0)
+            if now - last < self.rate:
+                if isinstance(event, CallbackQuery):
+                    try:
+                        await event.answer("⏳ Не так быстро...", show_alert=False)
+                    except Exception:
+                        pass
+                return
+            self._last[user.id] = now
+        return await handler(event, data)
 
 
 class OwnerRegister(StatesGroup):
@@ -289,12 +321,13 @@ def format_profile_text(user_id: int) -> str:
 
 async def _edit_or_answer(msg: Message, text: str, *,
                           parse_mode: str | None = None,
-                          reply_markup: InlineKeyboardMarkup | None = None) -> None:
-    """Редактирует сообщение если возможно, иначе отправляет новое."""
+                          reply_markup: InlineKeyboardMarkup | None = None) -> Message:
+    """Редактирует сообщение если возможно, иначе отправляет новое.
+    Всегда возвращает итоговый Message (нужен для сохранения msg_id в FSM)."""
     try:
-        await msg.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return await msg.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
     except Exception:
-        await msg.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return await msg.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
 
 
 # ─── Отправка меню ──────────────────────────────────────────────────────────
@@ -742,10 +775,10 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
             await callback.answer("Недоступно", show_alert=True)
             return
         await state.set_state(OwnerRegister.waiting_phone)
-        await state.update_data(prompt_msg_id=msg.message_id,
-                                prompt_chat_id=msg.chat.id)
-        await _edit_or_answer(msg, f"📱 Введите номер MAX:\n{PHONE_HINT}",
-                              reply_markup=_CANCEL_KB)
+        result = await _edit_or_answer(msg, f"📱 Введите номер MAX:\n{PHONE_HINT}",
+                                       reply_markup=_CANCEL_KB)
+        await state.update_data(prompt_msg_id=result.message_id,
+                                prompt_chat_id=result.chat.id)
 
     elif action == "queue":
         await _edit_or_answer(msg, "⏳ *Очередь*\n\nВыберите раздел:",
@@ -860,16 +893,18 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
 
     if action == "price":
         await state.set_state(AdminSettings.waiting_price)
-        await state.update_data(prompt_msg_id=msg.message_id, prompt_chat_id=msg.chat.id)
-        await _edit_or_answer(msg, "💰 Введите новый текст прайса:", reply_markup=settings_inline())
+        result = await _edit_or_answer(msg, "💰 Введите новый текст прайса:",
+                                       reply_markup=settings_inline())
+        await state.update_data(prompt_msg_id=result.message_id, prompt_chat_id=result.chat.id)
 
     elif action == "work":
         await _edit_or_answer(msg, "🔄 Выберите статус работы:", reply_markup=work_inline())
 
     elif action == "msg":
         await state.set_state(AdminSettings.waiting_broadcast)
-        await state.update_data(prompt_msg_id=msg.message_id, prompt_chat_id=msg.chat.id)
-        await _edit_or_answer(msg, "📢 Введите сообщение для рассылки:", reply_markup=settings_inline())
+        result = await _edit_or_answer(msg, "📢 Введите сообщение для рассылки:",
+                                       reply_markup=settings_inline())
+        await state.update_data(prompt_msg_id=result.message_id, prompt_chat_id=result.chat.id)
 
     elif action == "reset_queue":
         await _cancel_timer()
@@ -1114,6 +1149,9 @@ async def main() -> None:
     bot       = Bot(token=BOT_TOKEN, session=session)
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     dp        = Dispatcher(storage=RedisStorage.from_url(redis_url))
+    throttle  = ThrottleMiddleware(rate=RATE_LIMIT)
+    dp.message.middleware(throttle)
+    dp.callback_query.middleware(throttle)
     dp.include_router(router)
 
     log.info("Бот запущен. Админы: %s", ADMIN_IDS)
