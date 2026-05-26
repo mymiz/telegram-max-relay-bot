@@ -1,18 +1,76 @@
-"""Простое JSON-хранилище владельцев, очереди и активного запроса кода."""
+"""SQLite-хранилище владельцев, очереди и активного запроса кода."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+import sqlite3
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-# Локально: ./data  |  В облаке (Railway volume): /data
 DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parent / "data"))
-STORE_FILE = DATA_DIR / "store.json"
+DB_FILE = DATA_DIR / "store.db"
+_JSON_FILE = DATA_DIR / "store.json"
+
+_DDL = """
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+
+CREATE TABLE IF NOT EXISTS owners (
+    user_id   INTEGER PRIMARY KEY,
+    name      TEXT,
+    username  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS owner_phones (
+    owner_id  INTEGER NOT NULL,
+    phone     TEXT    NOT NULL,
+    PRIMARY KEY (owner_id, phone),
+    FOREIGN KEY (owner_id) REFERENCES owners(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS profiles (
+    user_id      INTEGER PRIMARY KEY,
+    balance      REAL    NOT NULL DEFAULT 0,
+    codes_ok     INTEGER NOT NULL DEFAULT 0,
+    codes_fail   INTEGER NOT NULL DEFAULT 0,
+    total_earned REAL    NOT NULL DEFAULT 0,
+    withdrawn    REAL    NOT NULL DEFAULT 0,
+    name         TEXT,
+    username     TEXT,
+    created_at   REAL    NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS queue (
+    pos        INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id   INTEGER NOT NULL,
+    admin_id   INTEGER NOT NULL,
+    phone      TEXT    NOT NULL,
+    created_at REAL    NOT NULL DEFAULT 0,
+    expires_at REAL    NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS active_request (
+    lock       INTEGER PRIMARY KEY DEFAULT 1 CHECK(lock = 1),
+    owner_id   INTEGER NOT NULL,
+    admin_id   INTEGER NOT NULL,
+    phone      TEXT    NOT NULL,
+    created_at REAL    NOT NULL DEFAULT 0,
+    expires_at REAL    NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS all_users (
+    user_id INTEGER PRIMARY KEY
+);
+"""
 
 
 def normalize_phone(raw: str) -> str | None:
@@ -66,24 +124,87 @@ class Store:
         self.bot_status: str = "включён"
         self.price: str = "не указан"
         self.all_users: set[int] = set()
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self._db = sqlite3.connect(str(DB_FILE), check_same_thread=False)
+        self._db.executescript(_DDL)
+        self._db.commit()
         self._load()
 
+    # ── загрузка ──────────────────────────────────────────────────────────────
+
     def _load(self) -> None:
-        if not STORE_FILE.exists():
+        """Загружает данные из SQLite. При первом запуске мигрирует из JSON."""
+        cur = self._db.execute("SELECT COUNT(*) FROM owners")
+        has_data = cur.fetchone()[0] > 0
+
+        if not has_data and _JSON_FILE.exists():
+            self._migrate_from_json()
             return
-        raw = json.loads(STORE_FILE.read_text(encoding="utf-8"))
+
+        for row in self._db.execute("SELECT user_id, name, username FROM owners"):
+            uid, name, username = row
+            self.owners[uid] = Owner(user_id=uid, name=name, username=username)
+
+        for row in self._db.execute("SELECT owner_id, phone FROM owner_phones"):
+            owner_id, phone = row
+            if owner_id in self.owners:
+                self.owners[owner_id].phones.append(phone)
+
+        for row in self._db.execute(
+            "SELECT user_id, balance, codes_ok, codes_fail, total_earned, "
+            "withdrawn, name, username, created_at FROM profiles"
+        ):
+            uid, bal, ok, fail, earned, withdrawn, name, uname, cat = row
+            self.profiles[uid] = UserProfile(
+                user_id=uid, balance=bal, codes_ok=ok, codes_fail=fail,
+                total_earned=earned, withdrawn=withdrawn,
+                name=name, username=uname, created_at=cat,
+            )
+
+        row = self._db.execute(
+            "SELECT owner_id, admin_id, phone, created_at, expires_at "
+            "FROM active_request WHERE lock=1"
+        ).fetchone()
+        if row:
+            self.active = CodeRequest(*row)
+
+        for row in self._db.execute(
+            "SELECT owner_id, admin_id, phone, created_at, expires_at "
+            "FROM queue ORDER BY pos"
+        ):
+            self.queue.append(CodeRequest(*row))
+
+        row = self._db.execute(
+            "SELECT value FROM settings WHERE key='bot_status'"
+        ).fetchone()
+        self.bot_status = row[0] if row else "включён"
+
+        row = self._db.execute(
+            "SELECT value FROM settings WHERE key='price'"
+        ).fetchone()
+        self.price = row[0] if row else "не указан"
+
+        self.all_users = {
+            r[0] for r in self._db.execute("SELECT user_id FROM all_users")
+        }
+
+    def _migrate_from_json(self) -> None:
+        """Однократная миграция из store.json → SQLite."""
+        raw: dict[str, Any] = json.loads(_JSON_FILE.read_text(encoding="utf-8"))
+
         for uid, o in raw.get("owners", {}).items():
             phones: list[str] = []
             if "phones" in o and isinstance(o["phones"], list):
                 phones = [p for p in o["phones"] if p]
             elif o.get("phone"):
                 phones = [o["phone"]]
-            self.owners[int(uid)] = Owner(
+            owner = Owner(
                 user_id=int(o["user_id"]),
                 phones=phones,
                 name=o.get("name"),
                 username=o.get("username"),
             )
+            self.owners[owner.user_id] = owner
 
         for uid, p in raw.get("profiles", {}).items():
             self.profiles[int(uid)] = UserProfile(
@@ -99,15 +220,30 @@ class Store:
             )
 
         if raw.get("active"):
-            self.active = self._req_from_dict(raw["active"])
-        self.queue = [self._req_from_dict(r) for r in raw.get("queue", [])]
-        self.bot_status = raw.get("bot_status", "включён")
-        self.price = raw.get("price", "не указан")
-        self.all_users = set(int(u) for u in raw.get("all_users", []))
+            d = raw["active"]
+            self.active = CodeRequest(
+                owner_id=int(d["owner_id"]), admin_id=int(d["admin_id"]),
+                phone=d["phone"],
+                created_at=float(d.get("created_at", time.time())),
+                expires_at=float(d.get("expires_at", 0)),
+            )
 
-        # Старый формат: pending → в очередь
+        for r in raw.get("queue", []):
+            self.queue.append(CodeRequest(
+                owner_id=int(r["owner_id"]), admin_id=int(r["admin_id"]),
+                phone=r["phone"],
+                created_at=float(r.get("created_at", time.time())),
+                expires_at=float(r.get("expires_at", 0)),
+            ))
+
+        # старый формат: pending → очередь / active
         for p in raw.get("pending", {}).values():
-            req = self._req_from_dict(p)
+            req = CodeRequest(
+                owner_id=int(p["owner_id"]), admin_id=int(p["admin_id"]),
+                phone=p["phone"],
+                created_at=float(p.get("created_at", time.time())),
+                expires_at=float(p.get("expires_at", 0)),
+            )
             if self._phone_taken(req.phone):
                 continue
             if self.active is None:
@@ -115,36 +251,87 @@ class Store:
             else:
                 self.queue.append(req)
 
-    @staticmethod
-    def _req_from_dict(d: dict[str, Any]) -> CodeRequest:
-        return CodeRequest(
-            owner_id=int(d["owner_id"]),
-            admin_id=int(d["admin_id"]),
-            phone=d["phone"],
-            created_at=float(d.get("created_at", time.time())),
-            expires_at=float(d.get("expires_at", 0)),
-        )
+        self.bot_status = raw.get("bot_status", "включён")
+        self.price = raw.get("price", "не указан")
+        self.all_users = {int(u) for u in raw.get("all_users", [])}
+
+        self.save()
+
+    # ── сохранение ────────────────────────────────────────────────────────────
 
     def save(self) -> None:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        payload: dict[str, Any] = {
-            "owners": {str(k): asdict(v) for k, v in self.owners.items()},
-            "profiles": {str(k): asdict(v) for k, v in self.profiles.items()},
-            "active": asdict(self.active) if self.active else None,
-            "queue": [asdict(r) for r in self.queue],
-            "bot_status": self.bot_status,
-            "price": self.price,
-            "all_users": list(self.all_users),
-        }
-        STORE_FILE.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        with self._db:
+            self._db.execute("DELETE FROM owner_phones")
+            self._db.execute("DELETE FROM owners")
+            self._db.executemany(
+                "INSERT INTO owners(user_id, name, username) VALUES(?,?,?)",
+                [(o.user_id, o.name, o.username) for o in self.owners.values()],
+            )
+            self._db.executemany(
+                "INSERT INTO owner_phones(owner_id, phone) VALUES(?,?)",
+                [
+                    (o.user_id, phone)
+                    for o in self.owners.values()
+                    for phone in o.phones
+                ],
+            )
+
+            self._db.executemany(
+                """INSERT INTO profiles
+                   (user_id, balance, codes_ok, codes_fail, total_earned,
+                    withdrawn, name, username, created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                   balance=excluded.balance, codes_ok=excluded.codes_ok,
+                   codes_fail=excluded.codes_fail, total_earned=excluded.total_earned,
+                   withdrawn=excluded.withdrawn, name=excluded.name,
+                   username=excluded.username, created_at=excluded.created_at""",
+                [
+                    (p.user_id, p.balance, p.codes_ok, p.codes_fail,
+                     p.total_earned, p.withdrawn, p.name, p.username, p.created_at)
+                    for p in self.profiles.values()
+                ],
+            )
+
+            self._db.execute("DELETE FROM active_request")
+            if self.active:
+                a = self.active
+                self._db.execute(
+                    "INSERT INTO active_request"
+                    "(lock, owner_id, admin_id, phone, created_at, expires_at)"
+                    " VALUES(1,?,?,?,?,?)",
+                    (a.owner_id, a.admin_id, a.phone, a.created_at, a.expires_at),
+                )
+
+            self._db.execute("DELETE FROM queue")
+            self._db.executemany(
+                "INSERT INTO queue(owner_id, admin_id, phone, created_at, expires_at)"
+                " VALUES(?,?,?,?,?)",
+                [
+                    (r.owner_id, r.admin_id, r.phone, r.created_at, r.expires_at)
+                    for r in self.queue
+                ],
+            )
+
+            self._db.executemany(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)",
+                [("bot_status", self.bot_status), ("price", self.price)],
+            )
+
+            self._db.executemany(
+                "INSERT OR IGNORE INTO all_users(user_id) VALUES(?)",
+                [(u,) for u in self.all_users],
+            )
+
+    # ── вспомогательные ───────────────────────────────────────────────────────
 
     def track_user(self, user_id: int) -> None:
         if user_id not in self.all_users:
             self.all_users.add(user_id)
-            self.save()
+            with self._db:
+                self._db.execute(
+                    "INSERT OR IGNORE INTO all_users(user_id) VALUES(?)", (user_id,)
+                )
 
     def total_phones(self) -> int:
         return sum(len(o.phones) for o in self.owners.values())
@@ -221,12 +408,7 @@ class Store:
             self.save()
             return owner, False
 
-        owner = Owner(
-            user_id=user_id,
-            phones=[phone],
-            name=name,
-            username=username,
-        )
+        owner = Owner(user_id=user_id, phones=[phone], name=name, username=username)
         self.owners[user_id] = owner
         self.save()
         return owner, False
