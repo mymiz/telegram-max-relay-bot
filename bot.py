@@ -1379,6 +1379,8 @@ async def main() -> None:
 
     # Сбрасываем webhook и накопившиеся обновления — гарантируем единственный экземпляр
     await bot.delete_webhook(drop_pending_updates=True)
+    # Убираем все зарегистрированные команды — только inline-кнопки
+    await bot.delete_my_commands()
     log.info("Бот запущен. Админы: %s", ADMIN_IDS)
     await _recover_queue_on_startup(bot)
     await dp.start_polling(bot, drop_pending_updates=True)
