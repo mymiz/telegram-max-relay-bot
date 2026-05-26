@@ -1208,9 +1208,11 @@ async def main() -> None:
     dp.callback_query.middleware(ThrottleMiddleware(rate=CALLBACK_RATE))
     dp.include_router(router)
 
+    # Сбрасываем webhook и накопившиеся обновления — гарантируем единственный экземпляр
+    await bot.delete_webhook(drop_pending_updates=True)
     log.info("Бот запущен. Админы: %s", ADMIN_IDS)
     await _recover_queue_on_startup(bot)
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
