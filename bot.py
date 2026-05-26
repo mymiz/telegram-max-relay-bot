@@ -166,6 +166,16 @@ def back_inline() -> InlineKeyboardMarkup:
     ]])
 
 
+def register_type_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💬 Код",  callback_data="reg_type:code"),
+            InlineKeyboardButton(text="📷 QR",   callback_data="reg_type:qr"),
+        ],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:back")],
+    ])
+
+
 def queue_inline() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Всего номеров в очереди", callback_data="queue:total")],
@@ -781,6 +791,34 @@ async def cb_reg_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await _show_menu(callback.message, uid)
 
 
+@router.callback_query(F.data.startswith("reg_type:"))
+async def cb_reg_type(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    uid    = callback.from_user.id if callback.from_user else 0
+    action = (callback.data or "").removeprefix("reg_type:")
+    msg    = callback.message
+
+    if not can_be_owner(uid) or is_admin(uid):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+
+    if action == "code":
+        await state.set_state(OwnerRegister.waiting_phone)
+        result = await _edit_or_answer(msg, f"📱 Введите номер MAX:\n{PHONE_HINT}",
+                                       reply_markup=_CANCEL_KB)
+        if result:
+            await state.update_data(prompt_msg_id=result.message_id,
+                                    prompt_chat_id=result.chat.id)
+
+    elif action == "qr":
+        await _edit_or_answer(
+            msg,
+            "📷 *QR-вход*\n\nФункция в разработке.\nВернитесь позже.",
+            parse_mode="Markdown",
+            reply_markup=register_type_inline(),
+        )
+
+
 @router.callback_query(F.data.startswith("menu:"))
 async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await callback.answer()
@@ -804,12 +842,12 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
         if not can_be_owner(uid) or is_admin(uid):
             await callback.answer("Недоступно", show_alert=True)
             return
-        await state.set_state(OwnerRegister.waiting_phone)
-        result = await _edit_or_answer(msg, f"📱 Введите номер MAX:\n{PHONE_HINT}",
-                                       reply_markup=_CANCEL_KB)
-        if result:
-            await state.update_data(prompt_msg_id=result.message_id,
-                                    prompt_chat_id=result.chat.id)
+        await _edit_or_answer(
+            msg,
+            "📱 *Сдать номер MAX*\n\nВыберите способ входа:",
+            parse_mode="Markdown",
+            reply_markup=register_type_inline(),
+        )
 
     elif action == "queue":
         await _edit_or_answer(msg, "⏳ *Очередь*\n\nВыберите раздел:",
