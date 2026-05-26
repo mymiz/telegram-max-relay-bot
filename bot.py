@@ -290,6 +290,14 @@ def format_queue_status() -> str:
     return str(total) if total else "пусто"
 
 
+def _price_amount() -> float:
+    """Извлекает числовую сумму из текстового прайса.
+    Примеры: '50$' → 50.0 | '100 руб' → 100.0 | '1.5' → 1.5
+    Если число не найдено — возвращает CODE_REWARD из .env."""
+    m = re.search(r"\d+(?:[.,]\d+)?", store.price)
+    return float(m.group().replace(",", ".")) if m else CODE_REWARD
+
+
 def welcome_text() -> str:
     icon = "✅" if is_bot_active() else "🔴"
     return (
@@ -690,15 +698,17 @@ async def _start_code_timer(bot: Bot, req: CodeRequest) -> None:
 
 
 async def _schedule_reward(bot: Bot, owner_id: int, phone: str) -> None:
-    """Начисляет награду владельцу через REWARD_DELAY_SEC секунд."""
+    """Начисляет награду владельцу через REWARD_DELAY_SEC секунд.
+    Сумма фиксируется из прайса в момент вызова, а не спустя 5 минут."""
     global _reward_task
+    reward = _price_amount()  # берём из store.price прямо сейчас
 
     async def _pay() -> None:
         await asyncio.sleep(REWARD_DELAY_SEC)
-        profile = store.record_code_success(owner_id, CODE_REWARD)
+        profile = store.record_code_success(owner_id, reward)
         note = (
-            f"💰 Начислено *{CODE_REWARD:.0f}$* · баланс *{profile.balance:.2f}$*"
-            if CODE_REWARD > 0 else "✅ Номер подтверждён."
+            f"💰 Начислено *{reward:.2f}$* · баланс *{profile.balance:.2f}$*"
+            if reward > 0 else "✅ Номер подтверждён."
         )
         try:
             await bot.send_message(owner_id, note, parse_mode="Markdown",
