@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -149,7 +150,7 @@ def owner_menu_inline() -> InlineKeyboardMarkup:
 def admin_menu_inline() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
         [
-            InlineKeyboardButton(text="📋 Владельцы",     callback_data="menu:owners"),
+            InlineKeyboardButton(text="📱 Номера",         callback_data="menu:numbers"),
             InlineKeyboardButton(text="🔐 Запросить код", callback_data="menu:request"),
         ],
         [InlineKeyboardButton(text="⚙️ Настройки",       callback_data="menu:settings")],
@@ -180,6 +181,16 @@ def owner_code_request_inline() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🚫 Отказаться", callback_data="owner:decline"),
     ]])
+
+
+def numbers_menu_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📊 Активные номера", callback_data="numbers:active"),
+            InlineKeyboardButton(text="👥 Участники",       callback_data="numbers:members"),
+        ],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:back")],
+    ])
 
 
 def queue_inline() -> InlineKeyboardMarkup:
@@ -293,6 +304,41 @@ def format_owners_list() -> str:
             lines.append(f"  {i}. `{req.phone}`")
         if store.queue_size() > 15:
             lines.append(f"  … ещё {store.queue_size() - 15}")
+    return "\n".join(lines)
+
+
+def format_active_phones_today() -> str:
+    today = date.today().isoformat()
+    active = [
+        (phone, owner)
+        for owner in store.owners.values()
+        for phone in owner.phones
+        if store.phone_cooldowns.get(phone) == today
+    ]
+    if not active:
+        return "📊 *Активные номера*\n\nСегодня активных номеров нет."
+    lines = [f"📊 *Активные номера за сегодня*\nВсего: *{len(active)}*\n"]
+    for i, (phone, owner) in enumerate(active, 1):
+        name = _md(owner.name or str(owner.user_id))
+        lines.append(f"  {i}. `{phone}` — {name}")
+    return "\n".join(lines)
+
+
+def format_members_today() -> str:
+    today = date.today().isoformat()
+    if not store.owners:
+        return "👥 *Участники*\n\nВладельцев нет."
+    members = sorted(
+        store.owners.values(),
+        key=lambda o: sum(1 for p in o.phones if store.phone_cooldowns.get(p) == today),
+        reverse=True,
+    )
+    lines = [f"👥 *Участники*\nВсего: *{len(members)}*\n"]
+    for i, owner in enumerate(members, 1):
+        count = sum(1 for p in owner.phones if store.phone_cooldowns.get(p) == today)
+        uname = f" @{_md(owner.username)}" if owner.username else ""
+        name  = _md(owner.name or "—")
+        lines.append(f"  {i}. {name}{uname} — *{count}* активн.")
     return "\n".join(lines)
 
 
@@ -923,12 +969,13 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
             reply_markup=back_inline(),
         )
 
-    elif action == "owners" and is_admin(uid):
-        if not store.owners:
-            await _edit_or_answer(msg, "Владельцев нет.", reply_markup=admin_menu_inline())
-        else:
-            await _edit_or_answer(msg, format_owners_list(), parse_mode="Markdown",
-                                  reply_markup=owners_request_inline())
+    elif action == "numbers" and is_admin(uid):
+        await _edit_or_answer(
+            msg,
+            "📱 *Номера*\n\nВыберите раздел:",
+            parse_mode="Markdown",
+            reply_markup=numbers_menu_inline(),
+        )
 
     elif action == "request" and is_admin(uid):
         await _edit_or_answer(msg, "🔐 *Запросить код*\n\nВыберите тип:",
@@ -950,6 +997,23 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
 
     else:
         await callback.answer("Команда недоступна", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("numbers:"))
+async def cb_numbers(callback: CallbackQuery) -> None:
+    await callback.answer()
+    uid = callback.from_user.id if callback.from_user else 0
+    if not is_admin(uid):
+        return
+    action = (callback.data or "").removeprefix("numbers:")
+    msg    = callback.message
+
+    if action == "active":
+        await _edit_or_answer(msg, format_active_phones_today(),
+                              parse_mode="Markdown", reply_markup=numbers_menu_inline())
+    elif action == "members":
+        await _edit_or_answer(msg, format_members_today(),
+                              parse_mode="Markdown", reply_markup=numbers_menu_inline())
 
 
 @router.callback_query(F.data.startswith("queue:"))
