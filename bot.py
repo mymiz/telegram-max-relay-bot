@@ -152,6 +152,7 @@ def settings_inline() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔄 Ворк",     callback_data="settings:work"),
         ],
         [InlineKeyboardButton(text="📢 Сообщение",   callback_data="settings:msg")],
+        [InlineKeyboardButton(text="🗑 Сброс очереди", callback_data="settings:reset_queue")],
         [InlineKeyboardButton(text="◀️ Назад",       callback_data="menu:back")],
     ])
 
@@ -869,6 +870,28 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(AdminSettings.waiting_broadcast)
         await state.update_data(prompt_msg_id=msg.message_id, prompt_chat_id=msg.chat.id)
         await _edit_or_answer(msg, "📢 Введите сообщение для рассылки:", reply_markup=settings_inline())
+
+    elif action == "reset_queue":
+        await _cancel_timer()
+        had_active = store.active is not None
+        if had_active:
+            try:
+                await callback.bot.send_message(store.active.owner_id,
+                                                "Запрос кода отменён администратором.")
+            except Exception:
+                pass
+        store.clear_active()
+        queue_count = len(store.queue)
+        store.queue.clear()
+        store.save()
+        await _edit_or_answer(
+            msg,
+            f"🗑 *Очередь сброшена*\n\n"
+            f"Активный запрос отменён: *{'да' if had_active else 'нет'}*\n"
+            f"Удалено из очереди: *{queue_count}*",
+            parse_mode="Markdown",
+            reply_markup=settings_inline(),
+        )
 
     elif action == "back":
         await _show_settings(msg)
