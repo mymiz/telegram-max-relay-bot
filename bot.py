@@ -1107,6 +1107,7 @@ async def cb_owner_decline(callback: CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(F.data.startswith("active:"))
 async def cb_active(callback: CallbackQuery, bot: Bot) -> None:
+    global _password_mode, _password_attempts, _request_kind
     if not callback.from_user or not is_admin(callback.from_user.id):
         await callback.answer("Только для администратора", show_alert=True)
         return
@@ -1127,7 +1128,6 @@ async def cb_active(callback: CallbackQuery, bot: Bot) -> None:
         await _finish_active(bot, reason="met")
 
     elif action == "code":
-        global _password_mode, _password_attempts, _request_kind
         _password_mode     = True
         _password_attempts = 1  # 1 Повтор = 2 попытки суммарно
         _request_kind      = "code"
@@ -1165,6 +1165,7 @@ async def cb_active(callback: CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(F.data.startswith("password:"))
 async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
+    global _password_mode, _password_attempts, _request_kind
     if not callback.from_user or not is_admin(callback.from_user.id):
         await callback.answer("Только для администратора", show_alert=True)
         return
@@ -1185,7 +1186,6 @@ async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
         await _finish_active(bot, reason="met")
 
     elif action == "password":
-        global _password_mode, _password_attempts, _request_kind
         _password_mode     = True
         _password_attempts = 1
         _request_kind      = "password"
@@ -1202,7 +1202,6 @@ async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
                 pass
 
     elif action == "repeat":
-        global _password_mode, _password_attempts
         if _password_attempts <= 0:
             await callback.answer("⚠️ Попытки исчерпаны — скип", show_alert=True)
             if isinstance(msg, Message):
