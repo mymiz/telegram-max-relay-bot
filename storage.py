@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS phone_cooldowns (
     phone        TEXT PRIMARY KEY,
     last_success TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS banned_phones (
+    phone TEXT PRIMARY KEY
+);
 """
 
 
@@ -131,6 +135,7 @@ class Store:
         self.price: str = "не указан"
         self.all_users: set[int] = set()
         self.phone_cooldowns: dict[str, float] = {}  # phone -> Unix timestamp успеха
+        self.banned_phones:   set[str] = set()
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(DB_FILE), check_same_thread=False)
         self._db.executescript(_DDL)
@@ -207,6 +212,10 @@ class Store:
             r[0]: r[1]
             for r in self._db.execute("SELECT phone, success_ts FROM phone_cooldowns")
             if r[1]  # пропускаем записи со старым форматом (ts = 0)
+        }
+
+        self.banned_phones = {
+            r[0] for r in self._db.execute("SELECT phone FROM banned_phones")
         }
 
     def _migrate_from_json(self) -> None:
@@ -463,7 +472,19 @@ class Store:
                 (phone, today, ts),
             )
 
-    def phone_status(self, phone: str) -> Literal["free", "active", "queued", "cooldown"]:
+    def ban_phone(self, phone: str) -> None:
+        self.banned_phones.add(phone)
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO banned_phones(phone) VALUES(?)", (phone,)
+            )
+
+    def is_phone_banned(self, phone: str) -> bool:
+        return phone in self.banned_phones
+
+    def phone_status(self, phone: str) -> Literal["free", "active", "queued", "cooldown", "banned"]:
+        if phone in self.banned_phones:
+            return "banned"
         if self.active and self.active.phone == phone:
             return "active"
         if any(r.phone == phone for r in self.queue):

