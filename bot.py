@@ -16,7 +16,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
@@ -77,6 +77,10 @@ def can_be_owner(uid: int | None) -> bool:
     return not OWNER_WHITELIST or uid in OWNER_WHITELIST
 
 
+def is_bot_active() -> bool:
+    return store.bot_status.lower() in ("включён", "включен", "on", "вкл")
+
+
 # ─── Инлайн-клавиатуры ──────────────────────────────────────────────────────
 
 def owner_menu_inline() -> InlineKeyboardMarkup:
@@ -134,7 +138,7 @@ def settings_inline() -> InlineKeyboardMarkup:
 
 
 def work_inline() -> InlineKeyboardMarkup:
-    on  = "✅ " if store.bot_status.lower() in ("включён", "включен", "on", "вкл") else ""
+    on  = "✅ " if is_bot_active() else ""
     off = "" if on else "✅ "
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -177,7 +181,7 @@ def format_queue_status() -> str:
 
 
 def welcome_text() -> str:
-    icon = "✅" if store.bot_status.lower() in ("включён", "включен", "on", "вкл") else "🔴"
+    icon = "✅" if is_bot_active() else "🔴"
     return (
         "Добро пожаловать в бота TrustMax\\_bot\\!\n\n"
         f"┌ Статус работы: {icon} {_esc(store.bot_status)}\n"
@@ -313,7 +317,16 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             o.name, o.username = user.full_name, user.username
             store.save()
 
-    if is_admin(uid) or can_be_owner(uid):
+    if is_admin(uid):
+        await _send_welcome(message, uid, first_time=first_time)
+        return
+    if can_be_owner(uid):
+        if not is_bot_active():
+            await message.answer(
+                "🔴 Бот временно выключен.\n"
+                "Попробуйте позже или обратитесь к администратору."
+            )
+            return
         await _send_welcome(message, uid, first_time=first_time)
         return
     await message.answer(
@@ -393,6 +406,9 @@ async def cmd_register(message: Message, state: FSMContext) -> None:
     if not can_be_owner(uid):
         await message.answer("Регистрация отключена для вашего аккаунта.")
         return
+    if not is_bot_active():
+        await message.answer("🔴 Бот временно выключен. Регистрация недоступна.")
+        return
     await state.set_state(OwnerRegister.waiting_phone)
     await message.answer(f"Введите номер MAX:\n{PHONE_HINT}")
 
@@ -400,6 +416,10 @@ async def cmd_register(message: Message, state: FSMContext) -> None:
 @router.message(OwnerRegister.waiting_phone, F.text)
 async def register_text(message: Message, state: FSMContext) -> None:
     if not message.text:
+        return
+    if not is_bot_active():
+        await state.clear()
+        await message.answer("🔴 Бот временно выключен. Регистрация недоступна.")
         return
     phone = normalize_phone(message.text)
     if not phone:
@@ -672,6 +692,10 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     action = (callback.data or "").removeprefix("menu:")
     msg = callback.message
 
+    if not is_admin(uid) and not is_bot_active():
+        await callback.answer("🔴 Бот временно выключен", show_alert=True)
+        return
+
     if action == "back":
         await _send_welcome(msg, uid)
 
@@ -878,7 +902,7 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
 # ─── Настройки ──────────────────────────────────────────────────────────────
 
 async def _show_settings(message: Message) -> None:
-    icon = "✅" if store.bot_status.lower() in ("включён", "включен", "on", "вкл") else "🔴"
+    icon = "✅" if is_bot_active() else "🔴"
     await message.answer(
         f"⚙️ Настройки\n\nСтатус: {icon} {store.bot_status}\nПрайс: {store.price}",
         reply_markup=settings_inline(),
@@ -917,6 +941,13 @@ async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
     if await state.get_state():
         return
     uid = message.from_user.id if message.from_user else 0
+
+    if not is_admin(uid) and not is_bot_active():
+        await message.answer(
+            "🔴 Бот временно выключен.\n"
+            "Попробуйте позже или обратитесь к администратору."
+        )
+        return
 
     # Ввод кода владельцем в ответ на запрос
     req = store.get_pending(uid)
@@ -965,7 +996,8 @@ async def main() -> None:
 
     session = AiohttpSession(proxy=TELEGRAM_PROXY) if TELEGRAM_PROXY else AiohttpSession()
     bot = Bot(token=BOT_TOKEN, session=session)
-    dp = Dispatcher(storage=MemoryStorage())
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    dp = Dispatcher(storage=RedisStorage.from_url(redis_url))
     dp.include_router(router)
 
     log.info("Бот запущен. Админы: %s", ADMIN_IDS)
