@@ -28,6 +28,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    ReplyKeyboardRemove,
     TelegramObject,
 )
 from dotenv import load_dotenv
@@ -427,6 +428,12 @@ async def _send_welcome(message: Message, uid: int, *, first_time: bool = False)
     Фото — отдельно без клавиатуры, чтобы меню-сообщение всегда было текстовым
     и могло редактироваться через edit_text при нажатии кнопок."""
     kb = admin_menu_inline() if is_admin(uid) else owner_menu_inline()
+    # Убираем любую reply-клавиатуру от старых версий бота
+    try:
+        rm = await message.answer("…", reply_markup=ReplyKeyboardRemove())
+        await rm.delete()
+    except Exception:
+        pass
     if first_time and LOGO_FILE:
         try:
             await message.answer_photo(photo=LOGO_FILE)
