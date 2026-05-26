@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -307,20 +307,25 @@ def format_owners_list() -> str:
     return "\n".join(lines)
 
 
+_MSK = timezone(timedelta(hours=3))
+
+
 def format_active_phones_today() -> str:
-    today = date.today().isoformat()
-    active = [
-        (phone, owner)
+    active: list[tuple[str, object, float]] = [  # (phone, owner, ts)
+        (phone, owner, store.phone_cooldowns[phone])
         for owner in store.owners.values()
         for phone in owner.phones
-        if store.phone_cooldowns.get(phone) == today
+        if store.is_phone_on_cooldown(phone)
     ]
+    # Сортируем по времени активации
+    active.sort(key=lambda x: x[2])
     if not active:
         return "📊 *Активные номера*\n\nСегодня активных номеров нет."
     lines = [f"📊 *Активные номера за сегодня*\nВсего: *{len(active)}*\n"]
-    for i, (phone, owner) in enumerate(active, 1):
-        name = _md(owner.name or str(owner.user_id))
-        lines.append(f"  {i}. `{phone}` — {name}")
+    for i, (phone, owner, ts) in enumerate(active, 1):
+        msk_time = datetime.fromtimestamp(ts, tz=_MSK).strftime("%H:%M")
+        username = _md(f"@{owner.username}" if owner.username else str(owner.user_id))
+        lines.append(f"  {i}. `{phone}` — {username} \\[{msk_time} МСК]")
     return "\n".join(lines)
 
 

@@ -130,11 +130,19 @@ class Store:
         self.bot_status: str = "включён"
         self.price: str = "не указан"
         self.all_users: set[int] = set()
-        self.phone_cooldowns: dict[str, str] = {}  # phone -> "YYYY-MM-DD"
+        self.phone_cooldowns: dict[str, float] = {}  # phone -> Unix timestamp успеха
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(DB_FILE), check_same_thread=False)
         self._db.executescript(_DDL)
         self._db.commit()
+        # Миграция: добавляем колонку success_ts если её ещё нет
+        try:
+            self._db.execute(
+                "ALTER TABLE phone_cooldowns ADD COLUMN success_ts REAL NOT NULL DEFAULT 0"
+            )
+            self._db.commit()
+        except Exception:
+            pass  # Колонка уже существует
         self._load()
 
     # ── загрузка ──────────────────────────────────────────────────────────────
@@ -197,7 +205,8 @@ class Store:
 
         self.phone_cooldowns = {
             r[0]: r[1]
-            for r in self._db.execute("SELECT phone, last_success FROM phone_cooldowns")
+            for r in self._db.execute("SELECT phone, success_ts FROM phone_cooldowns")
+            if r[1]  # пропускаем записи со старым форматом (ts = 0)
         }
 
     def _migrate_from_json(self) -> None:
@@ -437,17 +446,21 @@ class Store:
 
     def is_phone_on_cooldown(self, phone: str) -> bool:
         """True если номер уже был успешно обработан сегодня (UTC-сутки)."""
-        last = self.phone_cooldowns.get(phone)
-        return last == date.today().isoformat() if last else False
+        ts = self.phone_cooldowns.get(phone)
+        if not ts:
+            return False
+        return date.fromtimestamp(ts) == date.today()
 
     def record_phone_success(self, phone: str) -> None:
         """Фиксируем успешную обработку номера — следующая доступна завтра."""
+        ts    = time.time()
         today = date.today().isoformat()
-        self.phone_cooldowns[phone] = today
+        self.phone_cooldowns[phone] = ts
         with self._db:
             self._db.execute(
-                "INSERT OR REPLACE INTO phone_cooldowns(phone, last_success) VALUES(?,?)",
-                (phone, today),
+                "INSERT OR REPLACE INTO phone_cooldowns(phone, last_success, success_ts)"
+                " VALUES(?,?,?)",
+                (phone, today, ts),
             )
 
     def phone_status(self, phone: str) -> Literal["free", "active", "queued", "cooldown"]:
