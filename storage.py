@@ -395,18 +395,23 @@ class Store:
         name: str | None = None,
         username: str | None = None,
     ) -> tuple[Owner, bool]:
-        self.touch_profile(user_id, name=name, username=username)
+        profile = self.get_profile(user_id)
+        if name:
+            profile.name = name
+        if username:
+            profile.username = username
+
         if user_id in self.owners:
             owner = self.owners[user_id]
-            if phone in owner.phones:
-                return owner, True
-            owner.phones.append(phone)
             if name:
                 owner.name = name
             if username:
                 owner.username = username
+            already = phone in owner.phones
+            if not already:
+                owner.phones.append(phone)
             self.save()
-            return owner, False
+            return owner, already
 
         owner = Owner(user_id=user_id, phones=[phone], name=name, username=username)
         self.owners[user_id] = owner

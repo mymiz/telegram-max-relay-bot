@@ -90,6 +90,9 @@ class ThrottleMiddleware(BaseMiddleware):
                         pass
                 return
             self._last[user.id] = now
+            if len(self._last) > 1000:
+                cutoff = now - 300.0
+                self._last = {k: v for k, v in self._last.items() if v > cutoff}
         return await handler(event, data)
 
 
@@ -251,25 +254,25 @@ def welcome_text() -> str:
 
 
 def format_owners_list() -> str:
-    lines = [f"📋 **Владельцы**\nЛюдей: **{len(store.owners)}** · Номеров: **{store.total_phones()}**\n"]
+    lines = [f"📋 *Владельцы*\nЛюдей: *{len(store.owners)}* · Номеров: *{store.total_phones()}*\n"]
     for i, o in enumerate(store.owners.values(), 1):
         status = ""
         if store.active and store.active.owner_id == o.user_id:
             status = f" ⏳ код ({store.seconds_left()} сек)"
         elif any(r.owner_id == o.user_id for r in store.queue):
             status = " 📥 в очереди"
-        uname = f" @{o.username}" if o.username else ""
+        uname = f" @{_md(o.username)}" if o.username else ""
         prof  = store.get_profile(o.user_id)
         lines.append(
-            f"\n**{i}. {o.name or 'Без имени'}**{uname}{status}\n"
-            f"ID: `{o.user_id}` · номеров: **{len(o.phones)}** · баланс: **{prof.balance:.0f}$**"
+            f"\n*{i}. {_md(o.name or 'Без имени')}*{uname}{status}\n"
+            f"ID: `{o.user_id}` · номеров: *{len(o.phones)}* · баланс: *{prof.balance:.0f}$*"
         )
         for phone in o.phones:
             lines.append(f"  • `{phone}`")
     if store.active:
-        lines.append(f"\n⏳ **В работе:** `{store.active.phone}` — {store.seconds_left()} сек")
+        lines.append(f"\n⏳ *В работе:* `{store.active.phone}` — {store.seconds_left()} сек")
     if store.queue:
-        lines.append(f"\n📥 **Очередь** ({store.queue_size()}):")
+        lines.append(f"\n📥 *Очередь* ({store.queue_size()}):")
         for i, req in enumerate(store.queue[:15], 1):
             lines.append(f"  {i}. `{req.phone}`")
         if store.queue_size() > 15:
@@ -316,8 +319,7 @@ def format_profile_text(user_id: int) -> str:
         "",
         "⏳ *ТЕКУЩИЕ ЗАЯВКИ*\n",
         f"┌ В очереди: *{in_queue}*",
-        f"├ В обработке: *{in_active}*",
-        f"└ Ожидают код: *{in_active}*",
+        f"└ В обработке: *{in_active}*",
     ])
 
 
@@ -370,7 +372,7 @@ async def _show_settings(msg: Message | InaccessibleMessage | None) -> None:
     icon = "✅" if is_bot_active() else "🔴"
     await _edit_or_answer(
         msg,
-        f"⚙️ *Настройки*\n\nСтатус: {icon} {store.bot_status}\nПрайс: {store.price}",
+        f"⚙️ *Настройки*\n\nСтатус: {icon} {_md(store.bot_status)}\nПрайс: {_md(store.price)}",
         parse_mode="Markdown",
         reply_markup=settings_inline(),
     )
@@ -981,15 +983,11 @@ async def cb_request_code(callback: CallbackQuery, bot: Bot) -> None:
     if not phone:
         await callback.answer("Некорректный номер", show_alert=True)
         return
-    # Отвечаем на callback до долгих операций — Telegram не будет ждать
-    await callback.answer()
     ok = await _do_request(bot, callback.from_user.id, phone, None)
     if not ok:
-        try:
-            await callback.answer("Не удалось отправить запрос", show_alert=True)
-        except Exception:
-            pass
+        await callback.answer("Не удалось отправить запрос", show_alert=True)
         return
+    await callback.answer()
     if callback.message:
         await _edit_or_answer(callback.message, f"Запрос для {mask_phone(phone)} отправлен.",
                               reply_markup=admin_menu_inline())
