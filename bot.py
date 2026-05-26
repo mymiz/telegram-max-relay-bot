@@ -22,6 +22,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import (
+    BotCommand,
     CallbackQuery,
     FSInputFile,
     InaccessibleMessage,
@@ -1386,8 +1387,8 @@ async def main() -> None:
 
     # Сбрасываем webhook и накопившиеся обновления — гарантируем единственный экземпляр
     await bot.delete_webhook(drop_pending_updates=True)
-    # Убираем все зарегистрированные команды — только inline-кнопки
-    await bot.delete_my_commands()
+    # Единственная команда в меню — /start
+    await bot.set_my_commands([BotCommand(command="start", description="Главное меню")])
     log.info("Бот запущен. Админы: %s", ADMIN_IDS)
     await _recover_queue_on_startup(bot)
     await dp.start_polling(bot, drop_pending_updates=True)
