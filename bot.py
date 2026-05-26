@@ -121,7 +121,8 @@ def is_bot_active() -> bool:
 _SUPPORT_ROW = [
     InlineKeyboardButton(text="📖 Инструкция",
                          url="https://telegra.ph/Instrukciya-po-sdache-akkaunta-MAX-v-bota-TrustMax-Bot-05-26"),
-    InlineKeyboardButton(text="🛠 Тех. поддержка", url="https://t.me/Don1_Tomas1"),
+    InlineKeyboardButton(text="🛠 Поддержка 1", url="https://t.me/Don1_Tomas1"),
+    InlineKeyboardButton(text="🛠 Поддержка 2", url="https://t.me/tech_is_123"),
 ]
 
 
