@@ -97,7 +97,7 @@ def owner_menu_inline() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💸 Вывод средств", callback_data="menu:withdraw"),
         ],
         [
-            InlineKeyboardButton(text="📖 Инструкция",    callback_data="show:instruction"),
+            InlineKeyboardButton(text="📖 Инструкция",    url="https://telegra.ph/Instrukciya-po-sdache-akkaunta-MAX-v-bota-TrustMax-Bot-05-26"),
             InlineKeyboardButton(text="🛠 Тех. поддержка", url="https://t.me/Don1_Tomas1"),
         ],
     ])
@@ -116,7 +116,7 @@ def admin_menu_inline() -> InlineKeyboardMarkup:
     if store.active or store.queue:
         rows.append([InlineKeyboardButton(text="❌ Отменить", callback_data="menu:cancel")])
     rows.append([
-        InlineKeyboardButton(text="📖 Инструкция",    callback_data="show:instruction"),
+        InlineKeyboardButton(text="📖 Инструкция",    url="https://telegra.ph/Instrukciya-po-sdache-akkaunta-MAX-v-bota-TrustMax-Bot-05-26"),
         InlineKeyboardButton(text="🛠 Тех. поддержка", url="https://t.me/Don1_Tomas1"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -260,34 +260,6 @@ def format_profile_text(user_id: int) -> str:
         f"└ Ожидают код: *{in_active}*",
     ])
 
-
-# ─── Инструкция ─────────────────────────────────────────────────────────────
-
-_INSTRUCTION_TEXT = """🎓 *ГЛАВНАЯ ИНСТРУКЦИЯ TrustMax\\_Bot*
-
-Добро пожаловать в команду\\! Внимательно изучи правила, чтобы рубить кэш без ошибок\\! 💸
-
-*1️⃣ КАК СДАТЬ НОМЕР?*
-• Нажмите «Сдать номер📱» в меню\\.
-• Формат: \\+79998887766 \\(начинается с \\+, 11 цифр\\)\\.
-
-*2️⃣ ОЧЕРЕДЬ 🎰*
-• Отслеживай свою очередь в главном меню — поле «Актуальная очередь»\\.
-
-*3️⃣ ПРИЁМ КОДОВ ✉️*
-• Как только оператор возьмёт номер — бот пришлёт уведомление\\.
-• Введи код в чат\\. У тебя ровно *1 минута*\\.
-• Если не успел — номер переходит к следующему в очереди\\.
-
-*4️⃣ ОПЛАТА 💰*
-• Если код верный — деньги автоматически падают на баланс\\.
-• Вывод от 1$\\. Выплачиваем быстро\\! 🚀
-
-*5️⃣ ШТРАФЫ ⚠️*
-• Не ответил вовремя или отказался — фиксируется ошибка\\.
-• Следи за статистикой в разделе «👤 Профиль»\\.
-
-Удачи и больше профитов\\! 🍀"""
 
 
 # ─── Отправка меню ──────────────────────────────────────────────────────────
@@ -678,11 +650,6 @@ async def _do_request(bot: Bot, admin_id: int, phone: str, reply_to: Message | N
 
 
 # ─── Callbacks ──────────────────────────────────────────────────────────────
-
-@router.callback_query(F.data == "show:instruction")
-async def cb_instruction(callback: CallbackQuery) -> None:
-    await callback.answer()
-    await callback.message.answer(_INSTRUCTION_TEXT, parse_mode="MarkdownV2")
 
 
 @router.callback_query(F.data.startswith("menu:"))
