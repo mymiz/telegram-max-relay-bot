@@ -332,16 +332,19 @@ async def _edit_or_answer(
     parse_mode: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> Message | None:
-    """Редактирует сообщение если возможно, иначе отправляет новое.
-    Возвращает None если сообщение недоступно."""
+    """Редактирует сообщение если возможно, иначе удаляет старое и отправляет новое."""
     if not isinstance(msg, Message):
         return None
     try:
         return await msg.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
-            return msg  # содержимое не изменилось — дубликат не нужен
-        # другие ошибки (например, сообщение устарело) — отправляем новое
+            return msg
+    except Exception:
+        pass
+    # Редактирование не удалось — удаляем старое сообщение (убирает зависшую клавиатуру)
+    try:
+        await msg.delete()
     except Exception:
         pass
     try:
@@ -353,13 +356,16 @@ async def _edit_or_answer(
 # ─── Отправка меню ──────────────────────────────────────────────────────────
 
 async def _send_welcome(message: Message, uid: int, *, first_time: bool = False) -> None:
-    """Всегда отправляет НОВОЕ сообщение с меню (используется из /start и on_text)."""
+    """Всегда отправляет НОВОЕ сообщение с меню (используется из /start и on_text).
+    Фото — отдельно без клавиатуры, чтобы меню-сообщение всегда было текстовым
+    и могло редактироваться через edit_text при нажатии кнопок."""
     kb = admin_menu_inline() if is_admin(uid) else owner_menu_inline()
     if first_time and LOGO_FILE:
-        await message.answer_photo(photo=LOGO_FILE, caption=welcome_text(),
-                                   parse_mode="MarkdownV2", reply_markup=kb)
-    else:
-        await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=kb)
+        try:
+            await message.answer_photo(photo=LOGO_FILE)
+        except Exception:
+            pass
+    await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=kb)
 
 
 async def _show_menu(msg: Message | InaccessibleMessage | None, uid: int) -> None:
@@ -483,7 +489,8 @@ async def cmd_register(message: Message, state: FSMContext) -> None:
         await message.answer("🔴 Бот временно выключен. Регистрация недоступна.")
         return
     await state.set_state(OwnerRegister.waiting_phone)
-    await message.answer(f"📱 Введите номер MAX:\n{PHONE_HINT}", reply_markup=_CANCEL_KB)
+    sent = await message.answer(f"📱 Введите номер MAX:\n{PHONE_HINT}", reply_markup=_CANCEL_KB)
+    await state.update_data(prompt_msg_id=sent.message_id, prompt_chat_id=sent.chat.id)
 
 
 @router.message(OwnerRegister.waiting_phone, F.text)
@@ -532,7 +539,7 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
                 except Exception:
                     log.warning("Не удалось уведомить админа %s", admin_id)
 
-    # Редактируем оригинальное сообщение-запрос или отправляем новое
+    # Редактируем сообщение-подсказку, если оно известно
     if prompt_msg_id:
         try:
             await message.bot.edit_message_text(
@@ -541,9 +548,12 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
             )
             return
         except Exception:
-            pass
-    await message.answer(result)
-    await message.answer(welcome_text(), parse_mode="MarkdownV2", reply_markup=owner_menu_inline())
+            # Редактирование не вышло — удаляем сообщение-подсказку
+            try:
+                await message.bot.delete_message(prompt_chat_id, prompt_msg_id)
+            except Exception:
+                pass
+    await message.answer(result, reply_markup=owner_menu_inline())
 
 
 @router.message(Command("owners"))
