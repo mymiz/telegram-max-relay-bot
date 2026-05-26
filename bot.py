@@ -176,6 +176,12 @@ def register_type_inline() -> InlineKeyboardMarkup:
     ])
 
 
+def owner_code_request_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🚫 Отказаться", callback_data="owner:decline"),
+    ]])
+
+
 def queue_inline() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Всего номеров в очереди", callback_data="queue:total")],
@@ -608,10 +614,11 @@ async def _notify_owner_request(bot: Bot, req: CodeRequest) -> bool:
     try:
         await bot.send_message(
             req.owner_id,
-            f"🔐 **Запрос кода MAX**\n\nНомер: `{req.phone}`\n"
-            f"⏱ У вас **{CODE_TIMEOUT_SEC} сек** чтобы прислать **{CODE_LEN} цифр**.\n"
-            "Просто отправьте код ответным сообщением. Отказ: /decline",
+            f"🔐 *Запрос кода MAX*\n\nНомер: `{req.phone}`\n"
+            f"⏱ У вас *{CODE_TIMEOUT_SEC} сек* чтобы прислать *{CODE_LEN} цифр*.\n\n"
+            "Просто отправьте код ответным сообщением.",
             parse_mode="Markdown",
+            reply_markup=owner_code_request_inline(),
         )
         return True
     except Exception:
@@ -698,13 +705,14 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
 
     if reason == "code" and code:
         profile = store.record_code_success(req.owner_id, CODE_REWARD)
-        note = f"\n💰 +{CODE_REWARD:.0f}$ · баланс **{profile.balance:.2f}$**" if CODE_REWARD > 0 else ""
+        note = f"\n💰 +{CODE_REWARD:.0f}$ · баланс *{profile.balance:.2f}$*" if CODE_REWARD > 0 else ""
         if message:
-            await message.answer(f"✅ Код передан. Спасибо!{note}", parse_mode="Markdown")
+            await message.answer(f"✅ Код передан. Спасибо!{note}",
+                                 parse_mode="Markdown", reply_markup=owner_menu_inline())
         try:
             await bot.send_message(
                 admin_id,
-                f"✅ **Код**\nВладелец: {owner_name}\nНомер: `{req.phone}`\nКод: `{code}`",
+                f"✅ *Код*\nВладелец: {_md(owner_name)}\nНомер: `{req.phone}`\nКод: `{code}`",
                 parse_mode="Markdown",
             )
         except Exception:
@@ -713,7 +721,8 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
     elif reason == "timeout":
         store.record_code_fail(req.owner_id)
         try:
-            await bot.send_message(req.owner_id, "⏱ Время вышло. Код не получен.")
+            await bot.send_message(req.owner_id, "⏱ Время вышло. Код не получен.",
+                                   reply_markup=owner_menu_inline())
         except Exception:
             pass
         try:
@@ -725,7 +734,13 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
     elif reason == "decline":
         store.record_code_fail(req.owner_id)
         if message:
-            await message.answer("🚫 Вы отказались.")
+            await message.answer("🚫 Вы отказались.", reply_markup=owner_menu_inline())
+        else:
+            try:
+                await bot.send_message(req.owner_id, "🚫 Вы отказались.",
+                                       reply_markup=owner_menu_inline())
+            except Exception:
+                pass
         try:
             await bot.send_message(admin_id, f"🚫 Отказ для `{req.phone}`.", parse_mode="Markdown")
         except Exception:
@@ -733,7 +748,8 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
 
     elif reason == "cancel":
         try:
-            await bot.send_message(req.owner_id, "Запрос отменён администратором.")
+            await bot.send_message(req.owner_id, "Запрос отменён администратором.",
+                                   reply_markup=owner_menu_inline())
         except Exception:
             pass
 
@@ -789,6 +805,22 @@ async def cb_reg_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer("Отменено")
     uid = callback.from_user.id if callback.from_user else 0
     await _show_menu(callback.message, uid)
+
+
+@router.callback_query(F.data == "owner:decline")
+async def cb_owner_decline(callback: CallbackQuery, bot: Bot) -> None:
+    uid = callback.from_user.id if callback.from_user else 0
+    if not store.get_pending(uid):
+        await callback.answer("Нет активного запроса", show_alert=True)
+        return
+    await callback.answer("🚫 Запрос отклонён")
+    # Убираем кнопку с сообщения-запроса
+    if isinstance(callback.message, Message):
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    await _finish_active(bot, reason="decline")
 
 
 @router.callback_query(F.data.startswith("reg_type:"))
@@ -1098,7 +1130,7 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
         return
     req = store.get_pending(uid or 0)
     if not req:
-        await message.answer("Нет активного запроса.")
+        await message.answer("Нет активного запроса.", reply_markup=owner_menu_inline())
         return
     await _finish_active(message.bot, reason="decline", message=message)
 
@@ -1107,7 +1139,7 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 async def cmd_decline(message: Message, bot: Bot) -> None:
     uid = message.from_user.id if message.from_user else 0
     if not store.get_pending(uid):
-        await message.answer("Нет активного запроса.")
+        await message.answer("Нет активного запроса.", reply_markup=owner_menu_inline())
         return
     await _finish_active(bot, reason="decline", message=message)
 
@@ -1116,14 +1148,14 @@ async def cmd_decline(message: Message, bot: Bot) -> None:
 async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
     uid = message.from_user.id if message.from_user else 0
     if not store.get_pending(uid):
-        await message.answer("Нет запроса кода.")
+        await message.answer("Нет запроса кода.", reply_markup=owner_menu_inline())
         return
     if not command.args:
-        await message.answer(f"Пример: /code {'1' * CODE_LEN}")
+        await message.answer(f"Пример: /code {'1' * CODE_LEN}", reply_markup=owner_menu_inline())
         return
     code = parse_code(command.args)
     if not code:
-        await message.answer(f"Код — ровно {CODE_LEN} цифр.")
+        await message.answer(f"Код — ровно {CODE_LEN} цифр.", reply_markup=owner_menu_inline())
         return
     await _finish_active(bot, reason="code", code=code, message=message)
 
