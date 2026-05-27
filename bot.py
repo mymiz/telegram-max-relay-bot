@@ -218,12 +218,13 @@ _REQUEST_KB = InlineKeyboardMarkup(inline_keyboard=[
 
 _SETTINGS_KB = InlineKeyboardMarkup(inline_keyboard=[
     [
-        InlineKeyboardButton(text="💰 Прайс",      callback_data="settings:price"),
-        InlineKeyboardButton(text="🔄 Ворк",       callback_data="settings:work"),
+        InlineKeyboardButton(text="💰 Прайс",        callback_data="settings:price"),
+        InlineKeyboardButton(text="🔄 Ворк",         callback_data="settings:work"),
     ],
-    [InlineKeyboardButton(text="📢 Сообщение",     callback_data="settings:msg")],
-    [InlineKeyboardButton(text="🗑 Сброс очереди", callback_data="settings:reset_queue")],
-    [InlineKeyboardButton(text="◀️ Назад",         callback_data="menu:back")],
+    [InlineKeyboardButton(text="📢 Сообщение",       callback_data="settings:msg")],
+    [InlineKeyboardButton(text="🗑 Сброс очереди",   callback_data="settings:reset_queue")],
+    [InlineKeyboardButton(text="🔄 Сброс номеров",   callback_data="settings:reset_phones")],
+    [InlineKeyboardButton(text="◀️ Назад",           callback_data="menu:back")],
 ])
 
 _CANCEL_KB = InlineKeyboardMarkup(inline_keyboard=[[
@@ -1606,6 +1607,28 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
             reply_markup=_SETTINGS_KB,
         )
 
+    elif action == "reset_phones":
+        owners_before = list(store.owners.values())
+        total = store.reset_daily_phones()
+        await _cancel_timer()
+        for owner in owners_before:
+            try:
+                await callback.bot.send_message(
+                    owner.user_id,
+                    "🔄 *Список номеров сброшен администратором*\n\n"
+                    "Сдайте номера заново через «📱 Сдать номер».",
+                    parse_mode="Markdown",
+                    reply_markup=_OWNER_MENU_KB,
+                )
+            except Exception:
+                pass
+        await _edit_or_answer(
+            msg,
+            f"🔄 *Сброс номеров выполнен*\n\nУдалено номеров: *{total}*",
+            parse_mode="Markdown",
+            reply_markup=_SETTINGS_KB,
+        )
+
     elif action == "back":
         await _show_settings(msg)
 
@@ -1813,6 +1836,52 @@ async def _recover_queue_on_startup(bot: Bot) -> None:
     log.info("Восстановлен запрос %s, осталось %s сек", store.active.phone, left)
 
 
+_MSK = timezone(timedelta(hours=3))
+
+
+async def _do_daily_reset(bot: Bot) -> None:
+    """Ежедневный сброс: очищает телефоны всех владельцев, очередь, кулдауны."""
+    await _cancel_timer()
+    owners_to_notify = list(store.owners.values())
+    total = store.reset_daily_phones()
+    log.info("Ежедневный сброс: удалено %s номеров", total)
+    for owner in owners_to_notify:
+        try:
+            await bot.send_message(
+                owner.user_id,
+                "🔄 *Ежедневный сброс*\n\n"
+                "Список ваших номеров обнулён.\n"
+                "Сдайте номера заново через «📱 Сдать номер».",
+                parse_mode="Markdown",
+                reply_markup=_OWNER_MENU_KB,
+            )
+        except Exception:
+            pass
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"🔄 *Ежедневный сброс выполнен*\nУдалено номеров: *{total}*",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+
+
+async def _schedule_daily_reset(bot: Bot) -> None:
+    """Цикл: ждёт до 00:00 МСК, затем выполняет сброс и повторяет."""
+    while True:
+        now          = datetime.now(_MSK)
+        next_reset   = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        delay = (next_reset - now).total_seconds()
+        log.info("Следующий сброс номеров в %s МСК (через %.0f сек)",
+                 next_reset.strftime("%Y-%m-%d %H:%M"), delay)
+        await asyncio.sleep(delay)
+        await _do_daily_reset(bot)
+
+
 async def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Задайте TELEGRAM_BOT_TOKEN в .env")
@@ -1843,6 +1912,7 @@ async def main() -> None:
     await bot.set_my_commands([BotCommand(command="start", description="Главное меню")])
     log.info("Бот запущен. Админы: %s", ADMIN_IDS)
     await _recover_queue_on_startup(bot)
+    asyncio.create_task(_schedule_daily_reset(bot))
     await dp.start_polling(bot, drop_pending_updates=True)
 
 

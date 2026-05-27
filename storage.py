@@ -527,6 +527,21 @@ class Store:
                 (phone, today, ts),
             )
 
+    def reset_daily_phones(self) -> int:
+        """Сбрасывает все телефоны владельцев, очередь и кулдауны. Возвращает кол-во удалённых номеров."""
+        total = sum(len(o.phones) for o in self.owners.values())
+        for owner in self.owners.values():
+            owner.phones.clear()
+        self.active = None
+        self.queue.clear()
+        self.phone_cooldowns.clear()
+        with self._db:
+            self._db.execute("DELETE FROM owner_phones")
+            self._db.execute("DELETE FROM active_request")
+            self._db.execute("DELETE FROM queue")
+            self._db.execute("DELETE FROM phone_cooldowns")
+        return total
+
     def record_phone_history(self, owner_id: int, phone: str, status: str) -> None:
         """Записывает итог обработки номера в историю."""
         ts  = time.time()
