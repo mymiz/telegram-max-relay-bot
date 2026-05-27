@@ -201,6 +201,13 @@ _QUEUE_KB = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="◀️ Назад",                   callback_data="menu:back")],
 ])
 
+_STATS_KB = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="✅ Активные номера", callback_data="stats:active")],
+    [InlineKeyboardButton(text="⏳ Ждут очереди",    callback_data="stats:waiting")],
+    [InlineKeyboardButton(text="📁 Архив",            callback_data="stats:archive")],
+    [InlineKeyboardButton(text="◀️ Назад",            callback_data="menu:back")],
+])
+
 _REQUEST_KB = InlineKeyboardMarkup(inline_keyboard=[
     [
         InlineKeyboardButton(text="💬 SMS", callback_data="req_type:sms"),
@@ -953,6 +960,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
     if reason == "met":
         # Админ подтвердил «Встал» — награда через 5 минут
         store.record_phone_success(req.phone)
+        store.record_phone_history(req.owner_id, req.phone, "success")
         await _schedule_reward(bot, req.owner_id, req.phone)
         try:
             await bot.send_message(
@@ -967,6 +975,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
     elif reason == "code" and code:
         profile = store.record_code_success(req.owner_id, CODE_REWARD)
         store.record_phone_success(req.phone)
+        store.record_phone_history(req.owner_id, req.phone, "success")
         note = f"\n💰 +{CODE_REWARD:.0f}$ · баланс *{profile.balance:.2f}$*" if CODE_REWARD > 0 else ""
         if message:
             await message.answer(f"✅ Код передан. Спасибо!{note}",
@@ -982,6 +991,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
 
     elif reason == "skip":
         store.record_code_fail(req.owner_id)
+        store.record_phone_history(req.owner_id, req.phone, "skip")
         try:
             await bot.send_message(
                 req.owner_id,
@@ -994,6 +1004,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
 
     elif reason == "ban":
         store.ban_phone(req.phone)
+        store.record_phone_history(req.owner_id, req.phone, "ban")
         try:
             await bot.send_message(
                 req.owner_id,
@@ -1006,6 +1017,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
 
     elif reason == "timeout":
         store.record_code_fail(req.owner_id)
+        store.record_phone_history(req.owner_id, req.phone, "timeout")
         try:
             await bot.send_message(req.owner_id, "⏱ Время вышло. Код не получен.",
                                    reply_markup=_OWNER_MENU_KB)
@@ -1019,6 +1031,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
 
     elif reason == "decline":
         store.record_code_fail(req.owner_id)
+        store.record_phone_history(req.owner_id, req.phone, "decline")
         if message:
             await message.answer("🚫 Вы отказались.", reply_markup=_OWNER_MENU_KB)
         else:
@@ -1308,8 +1321,8 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
                               parse_mode="Markdown", reply_markup=_QUEUE_KB)
 
     elif action == "stats":
-        await _edit_or_answer(msg, format_profile_text(uid), parse_mode="Markdown",
-                              reply_markup=_BACK_KB)
+        await _edit_or_answer(msg, "📊 *Статистика*\n\nВыберите раздел:",
+                              parse_mode="Markdown", reply_markup=_STATS_KB)
 
     elif action == "withdraw":
         profile = store.get_profile(uid)
@@ -1368,6 +1381,94 @@ async def cb_numbers(callback: CallbackQuery) -> None:
     elif action == "members":
         await _edit_or_answer(msg, format_members_today(),
                               parse_mode="Markdown", reply_markup=_NUMBERS_MENU_KB)
+
+
+_HISTORY_STATUS_LABELS: dict[str, str] = {
+    "success": "✅ принят",
+    "skip":    "⏩ пропущен",
+    "ban":     "🚫 заблокирован",
+    "timeout": "⏱ таймаут",
+    "decline": "❌ отказ",
+}
+
+
+@router.callback_query(F.data.startswith("stats:"))
+async def cb_stats(callback: CallbackQuery) -> None:
+    await callback.answer()
+    uid    = callback.from_user.id if callback.from_user else 0
+    action = (callback.data or "").removeprefix("stats:")
+    msg    = callback.message
+
+    if action == "active":
+        phones = store.get_active_phones_for_owner(uid)
+        if not phones:
+            text = "✅ *Активные номера*\n\n_Нет активных номеров_"
+        else:
+            lines = ["✅ *Активные номера*\n"]
+            for phone, ts in phones:
+                dt = datetime.fromtimestamp(ts).strftime("%d.%m %H:%M")
+                lines.append(f"📱 `{mask_phone(phone)}` — встал в *{dt}*")
+            text = "\n".join(lines)
+        await _edit_or_answer(msg, text, parse_mode="Markdown", reply_markup=_STATS_KB)
+
+    elif action == "waiting":
+        owner  = store.owners.get(uid)
+        phones = owner.phones if owner else []
+        waiting = [
+            (p, store.queue_position(p))
+            for p in phones if store.phone_status(p) == "queued"
+        ]
+        if not waiting:
+            text = "⏳ *Ждут очереди*\n\n_Нет номеров в очереди_"
+        else:
+            lines = ["⏳ *Ждут очереди*\n"]
+            for phone, pos in sorted(waiting, key=lambda x: x[1]):
+                lines.append(f"📥 `{mask_phone(phone)}` — позиция *\\#{pos}*")
+            text = "\n".join(lines)
+        await _edit_or_answer(msg, text, parse_mode="Markdown", reply_markup=_STATS_KB)
+
+    elif action == "archive":
+        history = store.get_phone_history(uid)
+        if not history:
+            await _edit_or_answer(msg, "📁 *Архив*\n\n_История пуста_",
+                                  parse_mode="Markdown", reply_markup=_STATS_KB)
+            return
+        days: dict[str, list] = {}
+        for r in history:
+            days.setdefault(r["date"], []).append(r)
+        buttons = [
+            [InlineKeyboardButton(
+                text=f"📅 {day} · {len(days[day])} номеров",
+                callback_data=f"stats:day:{day}",
+            )]
+            for day in sorted(days.keys(), reverse=True)
+        ]
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="stats:back")])
+        await _edit_or_answer(msg, "📁 *Архив*\n\nВыберите день:",
+                              parse_mode="Markdown",
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    elif action.startswith("day:"):
+        day     = action.removeprefix("day:")
+        history = store.get_phone_history(uid)
+        records = [r for r in history if r["date"] == day]
+        if not records:
+            text = f"📅 *{_esc(day)}*\n\n_Нет записей_"
+        else:
+            lines = [f"📅 *{_esc(day)}*\n"]
+            for r in sorted(records, key=lambda x: x["processed_at"], reverse=True):
+                dt    = datetime.fromtimestamp(r["processed_at"]).strftime("%H:%M")
+                label = _HISTORY_STATUS_LABELS.get(r["status"], r["status"])
+                lines.append(f"📱 `{mask_phone(r['phone'])}` · {dt} · {label}")
+            text = "\n".join(lines)
+        back_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ К архиву", callback_data="stats:archive")],
+        ])
+        await _edit_or_answer(msg, text, parse_mode="Markdown", reply_markup=back_kb)
+
+    elif action == "back":
+        await _edit_or_answer(msg, "📊 *Статистика*\n\nВыберите раздел:",
+                              parse_mode="Markdown", reply_markup=_STATS_KB)
 
 
 @router.callback_query(F.data.startswith("queue:"))

@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS phone_cooldowns (
 CREATE TABLE IF NOT EXISTS banned_phones (
     phone TEXT PRIMARY KEY
 );
+
+CREATE TABLE IF NOT EXISTS phone_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id     INTEGER NOT NULL,
+    phone        TEXT    NOT NULL,
+    processed_at REAL    NOT NULL,
+    status       TEXT    NOT NULL,
+    date         TEXT    NOT NULL
+);
 """
 
 
@@ -517,6 +526,41 @@ class Store:
                 " VALUES(?,?,?)",
                 (phone, today, ts),
             )
+
+    def record_phone_history(self, owner_id: int, phone: str, status: str) -> None:
+        """Записывает итог обработки номера в историю."""
+        ts  = time.time()
+        day = date.today().isoformat()
+        with self._db:
+            self._db.execute(
+                "INSERT INTO phone_history(owner_id, phone, processed_at, status, date)"
+                " VALUES(?,?,?,?,?)",
+                (owner_id, phone, ts, status, day),
+            )
+
+    def get_phone_history(self, owner_id: int) -> list[dict]:
+        """Возвращает историю номеров владельца, от новых к старым."""
+        cur = self._db.execute(
+            "SELECT phone, processed_at, status, date FROM phone_history"
+            " WHERE owner_id=? ORDER BY processed_at DESC",
+            (owner_id,),
+        )
+        return [
+            {"phone": r[0], "processed_at": r[1], "status": r[2], "date": r[3]}
+            for r in cur.fetchall()
+        ]
+
+    def get_active_phones_for_owner(self, owner_id: int) -> list[tuple[str, float]]:
+        """Возвращает (phone, success_ts) для номеров владельца на кулдауне (успешно обработаны сегодня)."""
+        owner = self.owners.get(owner_id)
+        if not owner:
+            return []
+        result = [
+            (phone, self.phone_cooldowns.get(phone, 0.0))
+            for phone in owner.phones
+            if self.phone_status(phone) == "cooldown"
+        ]
+        return sorted(result, key=lambda x: x[1], reverse=True)
 
     def ban_phone(self, phone: str) -> None:
         self.banned_phones.add(phone)
