@@ -638,7 +638,7 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
             user.id, phone, name=user.full_name, username=user.username)
         await state.clear()
         if already:
-            result = f"ℹ️ Номер {mask_phone(phone)} уже в вашем списке ({len(owner.phones)} всего)."
+            result = f"ℹ️ Номер {mask_phone(phone)} уже зарегистрирован вами ранее (у вас {len(owner.phones)} номеров)."
         else:
             result = (f"✅ Номер {mask_phone(phone)} сохранён! Всего: {len(owner.phones)}.\n"
                       "Когда нужен код — получите уведомление.")
