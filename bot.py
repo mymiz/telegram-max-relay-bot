@@ -286,8 +286,8 @@ def parse_code(raw: str) -> str | None:
 
 
 def format_queue_status() -> str:
-    total = store.total_phones()
-    return str(total) if total else "пусто"
+    q = store.queue_size()
+    return str(q) if q else "пусто"
 
 
 def _price_amount() -> float:
