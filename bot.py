@@ -223,7 +223,6 @@ _SETTINGS_KB = InlineKeyboardMarkup(inline_keyboard=[
     ],
     [InlineKeyboardButton(text="📢 Сообщение",       callback_data="settings:msg")],
     [InlineKeyboardButton(text="🗑 Сброс очереди",   callback_data="settings:reset_queue")],
-    [InlineKeyboardButton(text="🔄 Сброс номеров",   callback_data="settings:reset_phones")],
     [InlineKeyboardButton(text="◀️ Назад",           callback_data="menu:back")],
 ])
 
@@ -318,27 +317,28 @@ def welcome_text() -> str:
 
 
 def format_owners_list() -> str:
-    lines = [f"📋 *Владельцы*\nЛюдей: *{len(store.owners)}* · Номеров: *{store.total_phones()}*\n"]
+    lines = [f"📋 *Владельцы*\nЛюдей: *{len(store.owners)}* · В очереди: *{store.queue_size()}*\n"]
     for i, o in enumerate(store.owners.values(), 1):
         status = ""
         if store.active and store.active.owner_id == o.user_id:
             status = f" ⏳ код ({store.seconds_left()} сек)"
         elif any(r.owner_id == o.user_id for r in store.queue):
-            status = " 📥 в очереди"
+            cnt = sum(1 for r in store.queue if r.owner_id == o.user_id)
+            status = f" 📥 {cnt} в очереди"
         uname = f" @{_md(o.username)}" if o.username else ""
         prof  = store.get_profile(o.user_id)
         lines.append(
             f"\n*{i}. {_md(o.name or 'Без имени')}*{uname}{status}\n"
-            f"ID: `{o.user_id}` · номеров: *{len(o.phones)}* · баланс: *{prof.balance:.0f}$*"
+            f"ID: `{o.user_id}` · баланс: *{prof.balance:.0f}$*"
         )
-        for phone in o.phones:
-            lines.append(f"  • `{phone}`")
     if store.active:
         lines.append(f"\n⏳ *В работе:* `{store.active.phone}` — {store.seconds_left()} сек")
     if store.queue:
         lines.append(f"\n📥 *Очередь* ({store.queue_size()}):")
         for i, req in enumerate(store.queue[:15], 1):
-            lines.append(f"  {i}. `{req.phone}`")
+            owner = store.owners.get(req.owner_id)
+            name  = (owner.name if owner else None) or str(req.owner_id)
+            lines.append(f"  {i}. `{req.phone}` — {name}")
         if store.queue_size() > 15:
             lines.append(f"  … ещё {store.queue_size() - 15}")
     return "\n".join(lines)
@@ -348,39 +348,28 @@ _MSK = timezone(timedelta(hours=3))
 
 
 def format_active_phones_today() -> str:
-    active: list[tuple[str, object, float]] = [  # (phone, owner, ts)
-        (phone, owner, store.phone_cooldowns[phone])
-        for owner in store.owners.values()
-        for phone in owner.phones
-        if store.is_phone_on_cooldown(phone)
-    ]
-    # Сортируем по времени активации
-    active.sort(key=lambda x: x[2])
-    if not active:
+    records = store.get_today_successes()
+    if not records:
         return "📊 *Активные номера*\n\nСегодня активных номеров нет."
-    lines = [f"📊 *Активные номера за сегодня*\nВсего: *{len(active)}*\n"]
-    for i, (phone, owner, ts) in enumerate(active, 1):
-        msk_time = datetime.fromtimestamp(ts, tz=_MSK).strftime("%H:%M")
-        username = _md(f"@{owner.username}" if owner.username else str(owner.user_id))
-        lines.append(f"  {i}. `{phone}` — {username} \\[{msk_time} МСК]")
+    lines = [f"📊 *Активные номера за сегодня*\nВсего: *{len(records)}*\n"]
+    for i, r in enumerate(records, 1):
+        msk_time = datetime.fromtimestamp(r["processed_at"], tz=_MSK).strftime("%H:%M")
+        owner    = store.owners.get(r["owner_id"])
+        username = _md(f"@{owner.username}" if owner and owner.username else str(r["owner_id"]))
+        lines.append(f"  {i}. `{r['phone']}` — {username} \\[{msk_time} МСК]")
     return "\n".join(lines)
 
 
 def format_members_today() -> str:
-    today = date.today().isoformat()
     if not store.owners:
         return "👥 *Участники*\n\nВладельцев нет."
-    # Pre-compute counts once — sort key and display value share the same dict
-    counts = {
-        o.user_id: sum(1 for p in o.phones if store.phone_cooldowns.get(p) == today)
-        for o in store.owners.values()
-    }
-    members = sorted(store.owners.values(), key=lambda o: counts[o.user_id], reverse=True)
-    lines = [f"👥 *Участники*\nВсего: *{len(members)}*\n"]
+    counts  = store.get_today_success_counts()
+    members = sorted(store.owners.values(), key=lambda o: counts.get(o.user_id, 0), reverse=True)
+    lines   = [f"👥 *Участники*\nВсего: *{len(members)}*\n"]
     for i, owner in enumerate(members, 1):
         uname = f" @{_md(owner.username)}" if owner.username else ""
         name  = _md(owner.name or "—")
-        lines.append(f"  {i}. {name}{uname} — *{counts[owner.user_id]}* активн.")
+        lines.append(f"  {i}. {name}{uname} — *{counts.get(owner.user_id, 0)}* активн.")
     return "\n".join(lines)
 
 
@@ -392,21 +381,16 @@ _STATUS_ICON = {"active": "⏳", "queued": "📥", "cooldown": "🕐", "banned":
 
 
 def owners_request_inline() -> InlineKeyboardMarkup | None:
-    if not store.owners:
+    if not store.queue:
         return None
     buttons = []
-    for o in store.owners.values():
-        for phone in o.phones:
-            if store.phone_status(phone) != "queued":
-                continue
-            pos = store.queue_position(phone)
-            pos_text = f" #{pos}" if pos else ""
-            buttons.append([InlineKeyboardButton(
-                text=f"📥{pos_text} {mask_phone(phone)} — {(o.name or str(o.user_id))[:20]}",
-                callback_data=f"req:{phone}",
-            )])
-    if not buttons:
-        return None
+    for i, req in enumerate(store.queue, 1):
+        owner = store.owners.get(req.owner_id)
+        name  = (owner.name if owner else None) or str(req.owner_id)
+        buttons.append([InlineKeyboardButton(
+            text=f"📥 #{i} {mask_phone(req.phone)} — {name[:20]}",
+            callback_data=f"req:{req.phone}",
+        )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -414,11 +398,11 @@ def owners_request_inline() -> InlineKeyboardMarkup | None:
 def format_profile_text(user_id: int) -> str:
     profile   = store.get_profile(user_id)
     owner     = store.owners.get(user_id)
-    phones    = owner.phones if owner else []
     raw_name  = (owner.name if owner else None) or profile.name or "—"
     raw_uname = (owner.username if owner else None) or profile.username
     in_queue  = sum(1 for r in store.queue if r.owner_id == user_id)
     in_active = 1 if store.active and store.active.owner_id == user_id else 0
+    total_ok  = profile.codes_ok
     return "\n".join([
         "👤 *ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ*\n",
         f"┌ Имя: {_md(raw_name)}",
@@ -428,10 +412,8 @@ def format_profile_text(user_id: int) -> str:
         "💰 *ФИНАНСОВАЯ СТАТИСТИКА*\n",
         f"┌ Баланс: *{profile.balance:.2f}$*",
         f"├ Заработано: *{profile.total_earned:.2f}$*",
-        f"└ Выведено: *{profile.withdrawn:.2f}$*",
-        "",
-        "📱 *СДАННЫЕ АККАУНТЫ*\n",
-        f"   MAX аккаунтов: *{len(phones)}*",
+        f"├ Выведено: *{profile.withdrawn:.2f}$*",
+        f"└ Успешных номеров: *{total_ok}*",
         "",
         "⏳ *ТЕКУЩИЕ ЗАЯВКИ*\n",
         f"┌ В очереди: *{in_queue}*",
@@ -628,30 +610,33 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
     prompt_msg_id  = data.get("prompt_msg_id")
     prompt_chat_id = data.get("prompt_chat_id", message.chat.id)
 
+    status = store.phone_status(phone)
+    await state.clear()
     if store.is_phone_banned(phone):
-        await state.clear()
         result = "🚫 Этот номер заблокирован. По вопросам обращайтесь в тех. поддержку."
-    elif (existing := store.owner_by_phone(phone)) and existing.user_id != user.id:
-        await state.clear()
-        result = "❌ Этот номер уже зарегистрирован. Обратитесь к администратору."
+    elif status == "active":
+        result = f"⏳ Номер {mask_phone(phone)} сейчас в обработке. Ожидайте."
+    elif status == "queued":
+        pos = store.queue_position(phone)
+        result = f"📥 Номер {mask_phone(phone)} уже в очереди (позиция #{pos})."
+    elif status == "cooldown":
+        result = f"🕐 Номер {mask_phone(phone)} уже был обработан сегодня. Попробуйте завтра."
     else:
-        owner, already = store.register_owner(
-            user.id, phone, name=user.full_name, username=user.username)
-        await state.clear()
-        if already:
-            result = f"ℹ️ Номер {mask_phone(phone)} уже зарегистрирован вами ранее (у вас {len(owner.phones)} номеров)."
-        else:
-            result = (f"✅ Номер {mask_phone(phone)} сохранён! Всего: {len(owner.phones)}.\n"
-                      "Когда нужен код — получите уведомление.")
-            for admin_id in ADMIN_IDS:
-                try:
-                    await message.bot.send_message(
-                        admin_id,
-                        f"Новый номер: {user.full_name or user.id} · `{phone}` · ID: `{user.id}`",
-                        parse_mode="Markdown",
-                    )
-                except Exception:
-                    log.warning("Не удалось уведомить админа %s", admin_id)
+        owner = store.ensure_owner(user.id, name=user.full_name, username=user.username)
+        default_admin = next(iter(ADMIN_IDS))
+        req = CodeRequest(owner_id=user.id, admin_id=default_admin, phone=phone)
+        store.push_queue(req)
+        result = f"✅ Номер {mask_phone(phone)} добавлен в очередь!"
+        for admin_id in ADMIN_IDS:
+            try:
+                await message.bot.send_message(
+                    admin_id,
+                    f"📥 Новый номер в очереди: {_md(user.full_name or str(user.id))}"
+                    f" · `{phone}` · ID: `{user.id}`",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                log.warning("Не удалось уведомить админа %s", admin_id)
 
     # Редактируем сообщение-подсказку, если оно известно
     if prompt_msg_id:
@@ -846,7 +831,7 @@ async def _admin_take_phone(
         await _edit_or_answer(msg, f"🚫 {mask_phone(phone)} заблокирован.",
                               reply_markup=owners_request_inline())
         return
-    if status in ("active", "queued"):
+    if status == "active":
         await _edit_or_answer(msg, f"⏳ {mask_phone(phone)} уже в обработке.",
                               reply_markup=owners_request_inline())
         return
@@ -859,6 +844,9 @@ async def _admin_take_phone(
                               "⚠️ Уже есть активный номер — завершите его сначала.",
                               reply_markup=admin_menu_inline())
         return
+    # Если номер в очереди — убираем его оттуда перед активацией
+    if status == "queued":
+        store.remove_phone(phone)
 
     req = CodeRequest(owner_id=owner.user_id, admin_id=admin_id, phone=phone)
     store.set_active(req, timeout_sec=30 * 60)  # держим слот 30 мин без таймера
@@ -1401,14 +1389,15 @@ async def cb_stats(callback: CallbackQuery) -> None:
     msg    = callback.message
 
     if action == "active":
-        phones = store.get_active_phones_for_owner(uid)
-        if not phones:
-            text = "✅ *Активные номера*\n\n_Нет активных номеров_"
+        records = store.get_today_successes()
+        mine    = [r for r in records if r["owner_id"] == uid]
+        if not mine:
+            text = "✅ *Активные номера*\n\n_Сегодня нет успешных номеров_"
         else:
             lines = ["✅ *Активные номера*\n"]
-            for phone, ts in phones:
-                dt = datetime.fromtimestamp(ts).strftime("%d.%m %H:%M")
-                lines.append(f"📱 `{mask_phone(phone)}` — встал в *{dt}*")
+            for r in mine:
+                dt = datetime.fromtimestamp(r["processed_at"], tz=_MSK).strftime("%d.%m %H:%M")
+                lines.append(f"📱 `{mask_phone(r['phone'])}` — встал в *{dt}* МСК")
             text = "\n".join(lines)
         await _edit_or_answer(msg, text, parse_mode="Markdown", reply_markup=_STATS_KB)
 
@@ -1603,16 +1592,6 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
             f"Активный запрос отменён: *{'да' if had_active else 'нет'}*\n"
             f"Удалено из очереди: *{queue_count}*\n"
             f"Уведомлено владельцев: *{len(owners_to_notify)}*",
-            parse_mode="Markdown",
-            reply_markup=_SETTINGS_KB,
-        )
-
-    elif action == "reset_phones":
-        total = store.reset_daily_phones()
-        await _cancel_timer()
-        await _edit_or_answer(
-            msg,
-            f"🔄 *Сброс номеров выполнен*\n\nУдалено номеров: *{total}*",
             parse_mode="Markdown",
             reply_markup=_SETTINGS_KB,
         )
@@ -1824,39 +1803,6 @@ async def _recover_queue_on_startup(bot: Bot) -> None:
     log.info("Восстановлен запрос %s, осталось %s сек", store.active.phone, left)
 
 
-_MSK = timezone(timedelta(hours=3))
-
-
-async def _do_daily_reset(bot: Bot) -> None:
-    """Ежедневный сброс: очищает телефоны всех владельцев, очередь, кулдауны."""
-    await _cancel_timer()
-    total = store.reset_daily_phones()
-    log.info("Ежедневный сброс: удалено %s номеров", total)
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(
-                admin_id,
-                f"🔄 *Ежедневный сброс выполнен*\nУдалено номеров: *{total}*",
-                parse_mode="Markdown",
-            )
-        except Exception:
-            pass
-
-
-async def _schedule_daily_reset(bot: Bot) -> None:
-    """Цикл: ждёт до 00:00 МСК, затем выполняет сброс и повторяет."""
-    while True:
-        now          = datetime.now(_MSK)
-        next_reset   = (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        delay = (next_reset - now).total_seconds()
-        log.info("Следующий сброс номеров в %s МСК (через %.0f сек)",
-                 next_reset.strftime("%Y-%m-%d %H:%M"), delay)
-        await asyncio.sleep(delay)
-        await _do_daily_reset(bot)
-
-
 async def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Задайте TELEGRAM_BOT_TOKEN в .env")
@@ -1887,7 +1833,6 @@ async def main() -> None:
     await bot.set_my_commands([BotCommand(command="start", description="Главное меню")])
     log.info("Бот запущен. Админы: %s", ADMIN_IDS)
     await _recover_queue_on_startup(bot)
-    asyncio.create_task(_schedule_daily_reset(bot))
     await dp.start_polling(bot, drop_pending_updates=True)
 
 

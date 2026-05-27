@@ -422,10 +422,67 @@ class Store:
         return sum(len(o.phones) for o in self.owners.values())
 
     def owner_by_phone(self, phone: str) -> Owner | None:
+        """Ищет владельца по номеру: сначала в active/queue, затем в owner.phones."""
+        if self.active and self.active.phone == phone:
+            return self.owners.get(self.active.owner_id)
+        for req in self.queue:
+            if req.phone == phone:
+                return self.owners.get(req.owner_id)
         for owner in self.owners.values():
             if phone in owner.phones:
                 return owner
         return None
+
+    def ensure_owner(
+        self,
+        user_id: int,
+        *,
+        name: str | None = None,
+        username: str | None = None,
+    ) -> Owner:
+        """Создаёт или обновляет запись владельца — без добавления телефона в список."""
+        profile = self.get_profile(user_id)
+        if name:
+            profile.name = name
+        if username:
+            profile.username = username
+        self._write_profile(profile)
+        if user_id in self.owners:
+            owner = self.owners[user_id]
+            if name:
+                owner.name = name
+            if username:
+                owner.username = username
+            self.update_owner_info(user_id, name, username)
+            return owner
+        owner = Owner(user_id=user_id, phones=[], name=name, username=username)
+        self.owners[user_id] = owner
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO owners(user_id, name, username) VALUES(?,?,?)",
+                (user_id, name, username),
+            )
+        return owner
+
+    def get_today_successes(self) -> list[dict]:
+        """Возвращает успешные номера за сегодня из phone_history."""
+        today = date.today().isoformat()
+        cur = self._db.execute(
+            "SELECT phone, owner_id, processed_at FROM phone_history"
+            " WHERE date=? AND status='success' ORDER BY processed_at",
+            (today,),
+        )
+        return [{"phone": r[0], "owner_id": r[1], "processed_at": r[2]} for r in cur.fetchall()]
+
+    def get_today_success_counts(self) -> dict[int, int]:
+        """Возвращает dict owner_id → кол-во успешных номеров за сегодня."""
+        today = date.today().isoformat()
+        cur = self._db.execute(
+            "SELECT owner_id, COUNT(*) FROM phone_history"
+            " WHERE date=? AND status='success' GROUP BY owner_id",
+            (today,),
+        )
+        return {r[0]: r[1] for r in cur.fetchall()}
 
     def get_profile(self, user_id: int) -> UserProfile:
         if user_id not in self.profiles:
