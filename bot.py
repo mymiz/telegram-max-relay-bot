@@ -1321,7 +1321,7 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
             f"💸 *Вывод средств*\n\n"
             f"Ваш баланс: *{profile.balance:.2f}$*\n\n"
             f"Минимальная сумма вывода: *1$*\n"
-            f"Для вывода: @Don1\\_Tomas1",
+            f"Для вывода: @yirica",
             parse_mode="Markdown",
             reply_markup=_BACK_KB,
         )
