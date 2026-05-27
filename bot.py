@@ -389,9 +389,12 @@ def owners_request_inline() -> InlineKeyboardMarkup | None:
     buttons = []
     for o in store.owners.values():
         for phone in o.phones:
-            icon = _STATUS_ICON.get(store.phone_status(phone), "🔐")
+            if store.phone_status(phone) != "queued":
+                continue
+            pos = store.queue_position(phone)
+            pos_text = f" #{pos}" if pos else ""
             buttons.append([InlineKeyboardButton(
-                text=f"{icon} {mask_phone(phone)} — {(o.name or str(o.user_id))[:20]}",
+                text=f"📥{pos_text} {mask_phone(phone)} — {(o.name or str(o.user_id))[:20]}",
                 callback_data=f"req:{phone}",
             )])
     if not buttons:
@@ -1422,10 +1425,14 @@ async def cb_req_type(callback: CallbackQuery, bot: Bot) -> None:
     if action == "sms":
         kb = owners_request_inline()
         if not kb:
-            await _edit_or_answer(msg, "Нет зарегистрированных номеров.",
-                                  reply_markup=_REQUEST_KB)
+            await _edit_or_answer(
+                msg,
+                "📭 *Нет номеров в очереди*\n\nВсе номера уже обработаны или ещё не добавлены в очередь.",
+                parse_mode="Markdown",
+                reply_markup=_REQUEST_KB,
+            )
             return
-        await _edit_or_answer(msg, format_owners_list(), parse_mode="Markdown", reply_markup=kb)
+        await _edit_or_answer(msg, "📥 *Номера в очереди:*", parse_mode="Markdown", reply_markup=kb)
     elif action == "qr":
         await _edit_or_answer(msg, "📷 *QR-режим*\n\nФункция в разработке.",
                               parse_mode="Markdown", reply_markup=_REQUEST_KB)
