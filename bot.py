@@ -741,7 +741,8 @@ async def _request_from_owner(
     if kind == "code":
         text = (
             f"🔢 *Нужен SMS-код для номера* `{req.phone}`\n"
-            f"Попытка *{attempt}/2* · отправьте *{CODE_LEN} цифр*."
+            f"Попытка *{attempt}/2* · отправьте *{CODE_LEN} цифр*.\n"
+            f"⏱ У вас *{CODE_TIMEOUT_SEC // 60} минута* на ответ."
         )
     else:
         text = (
