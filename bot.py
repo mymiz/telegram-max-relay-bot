@@ -65,6 +65,7 @@ RATE_LIMIT        = float(os.getenv("RATE_LIMIT_SEC", "1.0"))
 CALLBACK_RATE     = float(os.getenv("CALLBACK_RATE_SEC", "0.3"))
 REWARD_DELAY_SEC  = 5 * 60  # задержка начисления награды после «Встал»
 PHONE_HINT        = "Только номер России: +79991234567 (11 цифр, начинается с +7)"
+REQUIRED_CHANNEL  = "@trustmaxchannel"
 
 _timer_task:          asyncio.Task | None = None
 _reward_task:         asyncio.Task | None = None
@@ -174,6 +175,11 @@ _ADMIN_MENU_KB_CANCEL = InlineKeyboardMarkup(inline_keyboard=[
 _BACK_KB = InlineKeyboardMarkup(inline_keyboard=[[
     InlineKeyboardButton(text="◀️ Назад", callback_data="menu:back"),
 ]])
+
+_SUB_KB = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📢 Подписаться на канал", url=f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}")],
+    [InlineKeyboardButton(text="✅ Я подписался",          callback_data="check_sub")],
+])
 
 _REGISTER_TYPE_KB = InlineKeyboardMarkup(inline_keyboard=[
     [
@@ -486,6 +492,22 @@ async def _show_settings(msg: Message | InaccessibleMessage | None) -> None:
     )
 
 
+# ─── Проверка подписки ──────────────────────────────────────────────────────
+
+async def _is_subscribed(bot: Bot, user_id: int) -> bool:
+    """True если пользователь подписан на REQUIRED_CHANNEL."""
+    try:
+        member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        return member.status not in ("left", "kicked")
+    except Exception:
+        return True  # при ошибке (бот не в канале) пропускаем
+
+_SUB_TEXT = (
+    "📢 *Для использования бота необходимо подписаться на наш канал\\!\n\n*"
+    "После подписки нажмите *«✅ Я подписался»*\\."
+)
+
+
 # ─── Команды ────────────────────────────────────────────────────────────────
 
 @router.message(Command("start"))
@@ -499,6 +521,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         store.touch_profile(uid, name=user.full_name, username=user.username)
         if uid in store.owners:
             store.update_owner_info(uid, user.full_name, user.username)
+
+    if not is_admin(uid) and not await _is_subscribed(message.bot, uid):
+        await message.answer(_SUB_TEXT, parse_mode="MarkdownV2", reply_markup=_SUB_KB)
+        return
 
     if is_admin(uid) or can_be_owner(uid):
         if not is_admin(uid) and not is_bot_active():
@@ -1296,12 +1322,38 @@ async def cb_reg_type(callback: CallbackQuery, state: FSMContext) -> None:
         )
 
 
+@router.callback_query(F.data == "check_sub")
+async def cb_check_sub(callback: CallbackQuery, bot: Bot) -> None:
+    uid = callback.from_user.id if callback.from_user else 0
+    if await _is_subscribed(bot, uid):
+        await callback.answer("✅ Подписка подтверждена!", show_alert=False)
+        msg = callback.message
+        if isinstance(msg, Message):
+            await msg.delete()
+        # Показываем меню
+        if is_admin(uid) or can_be_owner(uid):
+            await bot.send_message(uid, welcome_text(), parse_mode="MarkdownV2",
+                                   reply_markup=_menu_kb(uid))
+        else:
+            await bot.send_message(
+                uid,
+                "Бот для передачи кода входа в MAX.\n"
+                "У вас нет доступа. Обратитесь к администратору."
+            )
+    else:
+        await callback.answer("❌ Вы ещё не подписались на канал.", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("menu:"))
 async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await callback.answer()
     uid    = callback.from_user.id if callback.from_user else 0
     action = (callback.data or "").removeprefix("menu:")
     msg    = callback.message
+
+    if not is_admin(uid) and not await _is_subscribed(bot, uid):
+        await _edit_or_answer(msg, _SUB_TEXT, parse_mode="MarkdownV2", reply_markup=_SUB_KB)
+        return
 
     if not is_admin(uid) and not is_bot_active():
         await _edit_or_answer(msg, "🔴 Бот временно выключен.\nПопробуйте позже.",
