@@ -1042,7 +1042,27 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
         except Exception:
             pass
 
-    await _process_next_in_queue(bot, admin_id)
+    # После любого исхода — показываем меню «Запросить код»
+    kb = owners_request_inline()
+    if kb:
+        try:
+            await bot.send_message(
+                admin_id,
+                "📥 *Следующий номер:*",
+                parse_mode="Markdown",
+                reply_markup=kb,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            await bot.send_message(
+                admin_id,
+                "✅ Очередь пуста.",
+                reply_markup=admin_menu_inline(),
+            )
+        except Exception:
+            pass
 
 
 async def _do_request(bot: Bot, admin_id: int, phone: str, reply_to: Message | None = None) -> bool:
@@ -1666,7 +1686,13 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
             reply_markup=admin_menu_inline(),
         )
         if store.active is None and store.queue:
-            await _process_next_in_queue(message.bot, uid or 0)
+            kb = owners_request_inline()
+            if kb:
+                try:
+                    await message.bot.send_message(uid or 0, "📥 *Следующий номер:*",
+                                                   parse_mode="Markdown", reply_markup=kb)
+                except Exception:
+                    pass
         return
     req = store.get_pending(uid or 0)
     if not req:
