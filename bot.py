@@ -1608,20 +1608,8 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
         )
 
     elif action == "reset_phones":
-        owners_before = list(store.owners.values())
         total = store.reset_daily_phones()
         await _cancel_timer()
-        for owner in owners_before:
-            try:
-                await callback.bot.send_message(
-                    owner.user_id,
-                    "🔄 *Список номеров сброшен администратором*\n\n"
-                    "Сдайте номера заново через «📱 Сдать номер».",
-                    parse_mode="Markdown",
-                    reply_markup=_OWNER_MENU_KB,
-                )
-            except Exception:
-                pass
         await _edit_or_answer(
             msg,
             f"🔄 *Сброс номеров выполнен*\n\nУдалено номеров: *{total}*",
@@ -1842,21 +1830,8 @@ _MSK = timezone(timedelta(hours=3))
 async def _do_daily_reset(bot: Bot) -> None:
     """Ежедневный сброс: очищает телефоны всех владельцев, очередь, кулдауны."""
     await _cancel_timer()
-    owners_to_notify = list(store.owners.values())
     total = store.reset_daily_phones()
     log.info("Ежедневный сброс: удалено %s номеров", total)
-    for owner in owners_to_notify:
-        try:
-            await bot.send_message(
-                owner.user_id,
-                "🔄 *Ежедневный сброс*\n\n"
-                "Список ваших номеров обнулён.\n"
-                "Сдайте номера заново через «📱 Сдать номер».",
-                parse_mode="Markdown",
-                reply_markup=_OWNER_MENU_KB,
-            )
-        except Exception:
-            pass
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_message(
