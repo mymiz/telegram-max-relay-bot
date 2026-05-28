@@ -1770,12 +1770,19 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
         await message.answer("Нет запроса кода.", reply_markup=_OWNER_MENU_KB)
         return
     if not command.args:
-        await message.answer(f"Пример: /code {'1' * CODE_LEN}", reply_markup=_OWNER_MENU_KB)
+        hint = "пароль" if _request_kind == "password" else f"{'1' * CODE_LEN}"
+        await message.answer(f"Пример: /code {hint}", reply_markup=_OWNER_MENU_KB)
         return
-    code = parse_code(command.args)
-    if not code:
-        await message.answer(f"Код — ровно {CODE_LEN} цифр.", reply_markup=_OWNER_MENU_KB)
-        return
+    if _request_kind == "password":
+        code = command.args.strip()
+        if not code:
+            await message.answer("Введите пароль.", reply_markup=_OWNER_MENU_KB)
+            return
+    else:
+        code = parse_code(command.args)
+        if not code:
+            await message.answer(f"Код — ровно {CODE_LEN} цифр.", reply_markup=_OWNER_MENU_KB)
+            return
     await message.answer("✅ Код отправлен администратору.", reply_markup=_OWNER_MENU_KB)
     await _forward_code_to_admin(bot, req, code)
 
@@ -1846,10 +1853,16 @@ async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
 
     req = store.get_pending(uid)
     if req and message.text:
-        code = parse_code(message.text)
-        if not code:
-            await message.answer(f"Код — {CODE_LEN} цифр (например 123456). Отказ: /decline")
-            return
+        if _request_kind == "password":
+            code = message.text.strip()
+            if not code:
+                await message.answer("Введите пароль. Отказ: /decline")
+                return
+        else:
+            code = parse_code(message.text)
+            if not code:
+                await message.answer(f"Код — {CODE_LEN} цифр (например 123456). Отказ: /decline")
+                return
         await message.answer("✅ Код отправлен администратору.", reply_markup=_OWNER_MENU_KB)
         await _forward_code_to_admin(bot, req, code)
         return
