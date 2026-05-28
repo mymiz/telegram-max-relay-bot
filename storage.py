@@ -328,8 +328,12 @@ class Store:
         self._write_setting("bot_status", value)
 
     def set_price(self, value: str) -> None:
-        self.price = value
-        self._write_setting("price", value)
+        clean = value.strip()
+        self.price = clean if clean else "не указан"
+        self._write_setting("price", self.price)
+        if self.price == "не указан":
+            self.bot_status = "выключен"
+            self._write_setting("bot_status", "выключен")
 
     def update_owner_info(self, uid: int, name: str | None, username: str | None) -> None:
         """Update owner name/username in memory and DB without a full save."""

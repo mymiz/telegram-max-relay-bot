@@ -127,6 +127,8 @@ def can_be_owner(uid: int | None) -> bool:
 
 
 def is_bot_active() -> bool:
+    if not store.price.strip() or store.price == "не указан":
+        return False
     return store.bot_status.lower() in ("включён", "включен", "on", "вкл")
 
 
