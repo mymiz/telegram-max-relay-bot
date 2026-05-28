@@ -12,7 +12,7 @@ import logging
 import os
 import re
 import time
-from datetime import date, datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -406,7 +406,6 @@ def _menu_kb(uid: int) -> InlineKeyboardMarkup:
     return admin_menu_inline() if is_admin(uid) else _OWNER_MENU_KB
 
 
-_STATUS_ICON = {"active": "⏳", "queued": "📥", "cooldown": "🕐", "banned": "🚫", "free": "🔐"}
 
 
 def owners_request_inline() -> InlineKeyboardMarkup | None:
@@ -844,7 +843,7 @@ async def _forward_code_to_admin(bot: Bot, req: CodeRequest, code: str) -> None:
 
 
 async def _activate_request(bot: Bot, req: CodeRequest) -> bool:
-    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts
+    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts, _request_kind
     # Резервируем слот ДО первого await — устраняет гонку при двух админах
     if not store.try_set_active(req, timeout_sec=CODE_TIMEOUT_SEC):
         return False
@@ -889,7 +888,7 @@ async def _admin_take_phone(
 ) -> None:
     """Резервируем номер для ручной обработки — владелец НЕ уведомляется.
     Уведомление отправляется только при нажатии «Код» или «Пароль»."""
-    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts
+    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts, _request_kind
 
     owner = store.owner_by_phone(phone)
     if not owner:
@@ -1002,7 +1001,7 @@ async def _queue_all_phones(bot: Bot, admin_id: int, msg: Message) -> None:
 
 async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
                          message: Message | None = None) -> None:
-    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts
+    global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts, _request_kind
     await _cancel_timer()
     req = store.clear_active()
     if not req:

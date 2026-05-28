@@ -561,37 +561,6 @@ class Store:
         self._write_profile(profile)
         return profile
 
-    def register_owner(
-        self,
-        user_id: int,
-        phone: str,
-        *,
-        name: str | None = None,
-        username: str | None = None,
-    ) -> tuple[Owner, bool]:
-        profile = self.get_profile(user_id)
-        if name:
-            profile.name = name
-        if username:
-            profile.username = username
-
-        if user_id in self.owners:
-            owner = self.owners[user_id]
-            if name:
-                owner.name = name
-            if username:
-                owner.username = username
-            already = phone in owner.phones
-            if not already:
-                owner.phones.append(phone)
-            self.save()
-            return owner, already
-
-        owner = Owner(user_id=user_id, phones=[phone], name=name, username=username)
-        self.owners[user_id] = owner
-        self.save()
-        return owner, False
-
     def _phone_taken(self, phone: str) -> bool:
         if self.active and self.active.phone == phone:
             return True
@@ -616,21 +585,6 @@ class Store:
                 (phone, today, ts),
             )
 
-    def reset_daily_phones(self) -> int:
-        """Сбрасывает все телефоны владельцев, очередь и кулдауны. Возвращает кол-во удалённых номеров."""
-        total = sum(len(o.phones) for o in self.owners.values())
-        for owner in self.owners.values():
-            owner.phones.clear()
-        self.active = None
-        self.queue.clear()
-        self.phone_cooldowns.clear()
-        with self._db:
-            self._db.execute("DELETE FROM owner_phones")
-            self._db.execute("DELETE FROM active_request")
-            self._db.execute("DELETE FROM queue")
-            self._db.execute("DELETE FROM phone_cooldowns")
-        return total
-
     def record_phone_history(self, owner_id: int, phone: str, status: str) -> None:
         """Записывает итог обработки номера в историю."""
         ts  = time.time()
@@ -653,18 +607,6 @@ class Store:
             {"phone": r[0], "processed_at": r[1], "status": r[2], "date": r[3]}
             for r in cur.fetchall()
         ]
-
-    def get_active_phones_for_owner(self, owner_id: int) -> list[tuple[str, float]]:
-        """Возвращает (phone, success_ts) для номеров владельца на кулдауне (успешно обработаны сегодня)."""
-        owner = self.owners.get(owner_id)
-        if not owner:
-            return []
-        result = [
-            (phone, self.phone_cooldowns.get(phone, 0.0))
-            for phone in owner.phones
-            if self.phone_status(phone) == "cooldown"
-        ]
-        return sorted(result, key=lambda x: x[1], reverse=True)
 
     def ban_phone(self, phone: str) -> None:
         self.banned_phones.add(phone)
