@@ -519,6 +519,13 @@ class Store:
         self._write_profile(profile)
         return profile.balance
 
+    def withdraw_balance(self, user_id: int, amount: float) -> float:
+        profile = self.get_profile(user_id)
+        profile.balance   = round(max(0.0, profile.balance - amount), 2)
+        profile.withdrawn = round(profile.withdrawn + amount, 2)
+        self._write_profile(profile)
+        return profile.balance
+
     def record_code_success(self, user_id: int, reward: float) -> UserProfile:
         profile = self.get_profile(user_id)
         profile.codes_ok += 1

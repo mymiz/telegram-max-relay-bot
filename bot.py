@@ -1886,6 +1886,8 @@ async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -
 
     await state.clear()
 
+    new_balance = store.withdraw_balance(uid, amount)
+
     raw_username = (
         f"@{message.from_user.username}" if (message.from_user and message.from_user.username)
         else f"id{uid}"
@@ -1894,7 +1896,7 @@ async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -
         f"💸 Запрос на вывод средств\n\n"
         f"👤 Владелец: {raw_username}\n"
         f"💰 Сумма: {amount:.2f}$\n"
-        f"📊 Баланс: {profile.balance:.2f}$"
+        f"📊 Остаток баланса: {new_balance:.2f}$"
     )
     log.info("withdraw: отправка уведомления админам %s", ADMIN_IDS)
     for admin_id in ADMIN_IDS:
@@ -1904,7 +1906,7 @@ async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -
         except Exception as e:
             log.warning("withdraw: НЕ удалось уведомить admin_id=%s: %s", admin_id, e)
 
-    result = f"✅ Запрос на вывод {amount:.2f}$ отправлен администратору."
+    result = f"✅ Запрос на вывод {amount:.2f}$ отправлен администратору.\nВаш баланс: {new_balance:.2f}$"
     if prompt_msg_id:
         try:
             await message.bot.edit_message_text(
