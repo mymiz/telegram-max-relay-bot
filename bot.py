@@ -834,9 +834,12 @@ async def _forward_code_to_admin(bot: Bot, req: CodeRequest, code: str) -> None:
 
 async def _activate_request(bot: Bot, req: CodeRequest) -> bool:
     global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts
-    if not await _notify_owner_request(bot, req):
+    # Резервируем слот ДО первого await — устраняет гонку при двух админах
+    if not store.try_set_active(req, timeout_sec=CODE_TIMEOUT_SEC):
         return False
-    store.set_active(req, timeout_sec=CODE_TIMEOUT_SEC)
+    if not await _notify_owner_request(bot, req):
+        store.clear_active()  # откат если владелец недоступен
+        return False
     await _start_code_timer(bot, req)
     _password_mode      = False
     _password_attempts  = 0
@@ -1197,6 +1200,9 @@ async def cb_active(callback: CallbackQuery, bot: Bot) -> None:
     if not req:
         await callback.answer("Нет активного запроса", show_alert=True)
         return
+    if req.admin_id != callback.from_user.id:
+        await callback.answer("Это не ваш запрос", show_alert=True)
+        return
     action = (callback.data or "").removeprefix("active:")
     msg    = callback.message
 
@@ -1254,6 +1260,9 @@ async def cb_password(callback: CallbackQuery, bot: Bot) -> None:
     req = store.active
     if not req:
         await callback.answer("Нет активного запроса", show_alert=True)
+        return
+    if req.admin_id != callback.from_user.id:
+        await callback.answer("Это не ваш запрос", show_alert=True)
         return
     action = (callback.data or "").removeprefix("password:")
     msg    = callback.message
@@ -1445,7 +1454,8 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
                               parse_mode="Markdown", reply_markup=_REQUEST_KB)
 
     elif action == "cancel" and is_admin(uid):
-        await _cancel_timer()
+        if store.active and store.active.admin_id == uid:
+            await _cancel_timer()
         cancelled, was_active = store.cancel_all_for_admin(uid)
         if was_active:
             try:
@@ -1760,7 +1770,8 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     uid = message.from_user.id if message.from_user else None
     if is_admin(uid):
-        await _cancel_timer()
+        if store.active and store.active.admin_id == uid:
+            await _cancel_timer()
         cancelled, was_active = store.cancel_all_for_admin(uid or 0)
         if was_active:
             try:

@@ -685,6 +685,15 @@ class Store:
         self.active = req
         self.save()
 
+    def try_set_active(self, req: CodeRequest, *, timeout_sec: int) -> bool:
+        """Атомарно занять слот. Возвращает False если уже занят."""
+        if self.active is not None:
+            return False
+        req.expires_at = time.time() + timeout_sec
+        self.active = req
+        self.save()
+        return True
+
     def clear_active(self) -> CodeRequest | None:
         req = self.active
         self.active = None
