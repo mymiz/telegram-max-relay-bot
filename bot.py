@@ -75,6 +75,9 @@ _password_mode:       bool                = False  # ожидаем код/па�
 _password_attempts:   int                 = 0      # оставшихся попыток «Повтор»
 _request_kind:        str                 = "code" # "code" или "password"
 
+# owner_uid -> {"amount": float, "admin_msgs": [(admin_id, msg_id), ...]}
+_pending_withdrawals: dict[int, dict]     = {}
+
 
 class ThrottleMiddleware(BaseMiddleware):
     """Ограничение частоты запросов: RATE_LIMIT_SEC секунд между действиями."""
@@ -181,6 +184,13 @@ _ADMIN_MENU_KB_CANCEL = InlineKeyboardMarkup(inline_keyboard=[
 _BACK_KB = InlineKeyboardMarkup(inline_keyboard=[[
     InlineKeyboardButton(text="◀️ Назад", callback_data="menu:back"),
 ]])
+
+
+def _withdraw_action_kb(owner_uid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Оплачено",  callback_data=f"wd:paid:{owner_uid}"),
+        InlineKeyboardButton(text="❌ Отказано",  callback_data=f"wd:reject:{owner_uid}"),
+    ]])
 
 _SUB_KB = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="📢 Подписаться на канал", url=f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}")],
@@ -1898,13 +1908,18 @@ async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -
         f"💰 Сумма: {amount:.2f}$\n"
         f"📊 Остаток баланса: {new_balance:.2f}$"
     )
+    kb = _withdraw_action_kb(uid)
+    admin_msgs: list[tuple[int, int]] = []
     log.info("withdraw: отправка уведомления админам %s", ADMIN_IDS)
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(admin_id, notify)
+            sent_msg = await bot.send_message(admin_id, notify, reply_markup=kb)
+            admin_msgs.append((admin_id, sent_msg.message_id))
             log.info("withdraw: уведомление отправлено admin_id=%s", admin_id)
         except Exception as e:
             log.warning("withdraw: НЕ удалось уведомить admin_id=%s: %s", admin_id, e)
+
+    _pending_withdrawals[uid] = {"amount": amount, "admin_msgs": admin_msgs}
 
     result = f"✅ Запрос на вывод {amount:.2f}$ отправлен администратору.\nВаш баланс: {new_balance:.2f}$"
     if prompt_msg_id:
@@ -1917,6 +1932,61 @@ async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -
         except Exception:
             pass
     await message.answer(result, reply_markup=_OWNER_MENU_KB)
+
+
+@router.callback_query(F.data.startswith("wd:"))
+async def cb_withdraw_action(callback: CallbackQuery, bot: Bot) -> None:
+    if not callback.from_user or not is_admin(callback.from_user.id):
+        await callback.answer("Только для администратора", show_alert=True)
+        return
+
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+
+    action    = parts[1]          # "paid" или "reject"
+    owner_uid = int(parts[2])
+
+    pending = _pending_withdrawals.pop(owner_uid, None)
+    if not pending:
+        await callback.answer("Запрос уже обработан", show_alert=True)
+        return
+
+    amount     = pending["amount"]
+    admin_msgs = pending["admin_msgs"]
+
+    # Удаляем сообщение-запрос у всех админов
+    for admin_id, msg_id in admin_msgs:
+        try:
+            await bot.delete_message(admin_id, msg_id)
+        except Exception:
+            pass
+
+    if action == "paid":
+        await callback.answer("✅ Помечено как оплачено")
+        try:
+            await bot.send_message(
+                owner_uid,
+                f"✅ Ваш запрос на вывод *{amount:.2f}$* оплачен.",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.warning("withdraw paid: не удалось уведомить владельца %s: %s", owner_uid, e)
+
+    elif action == "reject":
+        store.add_balance(owner_uid, amount)  # возвращаем деньги
+        await callback.answer("❌ Запрос отклонён")
+        try:
+            profile = store.get_profile(owner_uid)
+            await bot.send_message(
+                owner_uid,
+                f"❌ Ваш запрос на вывод *{amount:.2f}$* отклонён.\n"
+                f"Средства возвращены. Баланс: *{profile.balance:.2f}$*",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.warning("withdraw reject: не удалось уведомить владельца %s: %s", owner_uid, e)
 
 
 # ─── Обработчик текста ──────────────────────────────────────────────────────
