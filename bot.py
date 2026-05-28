@@ -116,6 +116,10 @@ class AdminSettings(StatesGroup):
     waiting_broadcast = State()
 
 
+class OwnerWithdraw(StatesGroup):
+    waiting_amount = State()
+
+
 def is_admin(uid: int | None) -> bool:
     return uid is not None and uid in ADMIN_IDS
 
@@ -1390,15 +1394,29 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
 
     elif action == "withdraw":
         profile = store.get_profile(uid)
-        await _edit_or_answer(
-            msg,
-            f"💸 *Вывод средств*\n\n"
-            f"Ваш баланс: *{profile.balance:.2f}$*\n\n"
-            f"Минимальная сумма вывода: *1$*\n"
-            f"Для вывода: @yirica",
-            parse_mode="Markdown",
-            reply_markup=_BACK_KB,
-        )
+        if profile.balance < 1:
+            await _edit_or_answer(
+                msg,
+                f"💸 *Вывод средств*\n\n"
+                f"Ваш баланс: *{profile.balance:.2f}$*\n\n"
+                f"❌ Минимальная сумма вывода — *1$*. Недостаточно средств.",
+                parse_mode="Markdown",
+                reply_markup=_BACK_KB,
+            )
+        else:
+            sent = await _edit_or_answer(
+                msg,
+                f"💸 *Вывод средств*\n\n"
+                f"Ваш баланс: *{profile.balance:.2f}$*\n\n"
+                f"Введите сумму вывода от *1$* до *{profile.balance:.2f}$*:",
+                parse_mode="Markdown",
+                reply_markup=_CANCEL_KB,
+            )
+            await state.set_state(OwnerWithdraw.waiting_amount)
+            await state.update_data(
+                prompt_msg_id=sent.message_id if sent else None,
+                prompt_chat_id=msg.chat.id,
+            )
 
     elif action == "numbers" and is_admin(uid):
         await _edit_or_answer(
@@ -1839,6 +1857,60 @@ async def settings_broadcast_input(message: Message, state: FSMContext, bot: Bot
         except Exception:
             pass
     await message.answer(result, reply_markup=_SETTINGS_KB)
+
+
+@router.message(OwnerWithdraw.waiting_amount, F.text)
+async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -> None:
+    uid  = message.from_user.id if message.from_user else 0
+    text = (message.text or "").strip().replace(",", ".")
+    data          = await state.get_data()
+    prompt_msg_id = data.get("prompt_msg_id")
+    prompt_chat   = data.get("prompt_chat_id", message.chat.id)
+
+    profile = store.get_profile(uid)
+
+    try:
+        amount = float(text)
+    except ValueError:
+        await message.answer("❌ Введите число, например: `50`", parse_mode="Markdown")
+        return
+
+    if amount < 1:
+        await message.answer("❌ Минимальная сумма вывода — *1$*.", parse_mode="Markdown")
+        return
+    if amount > profile.balance:
+        await message.answer(
+            f"❌ Сумма превышает ваш баланс *{profile.balance:.2f}$*.",
+            parse_mode="Markdown",
+        )
+        return
+
+    await state.clear()
+
+    username = f"@{message.from_user.username}" if (message.from_user and message.from_user.username) else f"id{uid}"
+    notify = (
+        f"💸 *Запрос на вывод средств*\n\n"
+        f"👤 Владелец: {username}\n"
+        f"💰 Сумма: *{amount:.2f}$*\n"
+        f"📊 Баланс: *{profile.balance:.2f}$*"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, notify, parse_mode="Markdown")
+        except Exception:
+            pass
+
+    result = f"✅ Запрос на вывод *{amount:.2f}$* отправлен администратору."
+    if prompt_msg_id:
+        try:
+            await message.bot.edit_message_text(
+                result, chat_id=prompt_chat, message_id=prompt_msg_id,
+                parse_mode="Markdown", reply_markup=_BACK_KB,
+            )
+            return
+        except Exception:
+            pass
+    await message.answer(result, parse_mode="Markdown", reply_markup=_OWNER_MENU_KB)
 
 
 # ─── Обработчик текста ──────────────────────────────────────────────────────
