@@ -1863,6 +1863,8 @@ async def settings_broadcast_input(message: Message, state: FSMContext, bot: Bot
 async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -> None:
     uid  = message.from_user.id if message.from_user else 0
     text = (message.text or "").strip().replace(",", ".")
+    log.info("withdraw_amount_input: uid=%s text=%r", uid, text)
+
     data          = await state.get_data()
     prompt_msg_id = data.get("prompt_msg_id")
     prompt_chat   = data.get("prompt_chat_id", message.chat.id)
@@ -1872,17 +1874,14 @@ async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -
     try:
         amount = float(text)
     except ValueError:
-        await message.answer("❌ Введите число, например: `50`", parse_mode="Markdown")
+        await message.answer("❌ Введите число, например: 50")
         return
 
     if amount < 1:
-        await message.answer("❌ Минимальная сумма вывода — *1$*.", parse_mode="Markdown")
+        await message.answer("❌ Минимальная сумма вывода — 1$.")
         return
     if amount > profile.balance:
-        await message.answer(
-            f"❌ Сумма превышает ваш баланс *{profile.balance:.2f}$*.",
-            parse_mode="Markdown",
-        )
+        await message.answer(f"❌ Сумма превышает ваш баланс {profile.balance:.2f}$.")
         return
 
     await state.clear()
@@ -1892,28 +1891,30 @@ async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -
         else f"id{uid}"
     )
     notify = (
-        f"💸 *Запрос на вывод средств*\n\n"
-        f"👤 Владелец: {_md(raw_username)}\n"
-        f"💰 Сумма: *{amount:.2f}$*\n"
-        f"📊 Баланс: *{profile.balance:.2f}$*"
+        f"💸 Запрос на вывод средств\n\n"
+        f"👤 Владелец: {raw_username}\n"
+        f"💰 Сумма: {amount:.2f}$\n"
+        f"📊 Баланс: {profile.balance:.2f}$"
     )
+    log.info("withdraw: отправка уведомления админам %s", ADMIN_IDS)
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(admin_id, notify, parse_mode="Markdown")
+            await bot.send_message(admin_id, notify)
+            log.info("withdraw: уведомление отправлено admin_id=%s", admin_id)
         except Exception as e:
-            log.warning("Не удалось уведомить админа %s о выводе: %s", admin_id, e)
+            log.warning("withdraw: НЕ удалось уведомить admin_id=%s: %s", admin_id, e)
 
-    result = f"✅ Запрос на вывод *{amount:.2f}$* отправлен администратору."
+    result = f"✅ Запрос на вывод {amount:.2f}$ отправлен администратору."
     if prompt_msg_id:
         try:
             await message.bot.edit_message_text(
                 result, chat_id=prompt_chat, message_id=prompt_msg_id,
-                parse_mode="Markdown", reply_markup=_BACK_KB,
+                reply_markup=_BACK_KB,
             )
             return
         except Exception:
             pass
-    await message.answer(result, parse_mode="Markdown", reply_markup=_OWNER_MENU_KB)
+    await message.answer(result, reply_markup=_OWNER_MENU_KB)
 
 
 # ─── Обработчик текста ──────────────────────────────────────────────────────
