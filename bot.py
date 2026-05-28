@@ -840,6 +840,7 @@ async def _activate_request(bot: Bot, req: CodeRequest) -> bool:
     await _start_code_timer(bot, req)
     _password_mode      = False
     _password_attempts  = 0
+    _request_kind       = "code"
     q = store.queue_size()
     queue_note = f"\n📥 В очереди: {q}" if q else ""
     try:
@@ -895,6 +896,7 @@ async def _admin_take_phone(
     store.set_active(req, timeout_sec=30 * 60)  # держим слот 30 мин без таймера
     _password_mode     = False
     _password_attempts = 0
+    _request_kind      = "code"
 
     sent = await _edit_or_answer(
         msg,
@@ -916,6 +918,7 @@ async def _process_next_in_queue(bot: Bot, admin_id: int) -> None:
             except Exception:
                 pass
             return
+        nxt.admin_id = admin_id  # назначаем текущего активного админа
         if await _activate_request(bot, nxt):
             return
         try:
@@ -984,6 +987,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
     _admin_ctrl_chat_id = None
     _password_mode      = False
     _password_attempts  = 0
+    _request_kind       = "code"
 
     owner      = store.owners.get(req.owner_id)
     owner_name = owner.name if owner else str(req.owner_id)
@@ -1814,7 +1818,8 @@ async def cmd_code(message: Message, command: CommandObject, bot: Bot) -> None:
             await message.answer(f"Код — ровно {CODE_LEN} цифр.", reply_markup=_OWNER_MENU_KB)
             return
     await message.answer("✅ Код отправлен администратору.", reply_markup=_OWNER_MENU_KB)
-    await _forward_code_to_admin(bot, req, code)
+    if store.get_pending(uid):  # гонка: проверяем что запрос не закрыт пока ждали
+        await _forward_code_to_admin(bot, req, code)
 
 
 # ─── FSM: ввод настроек ─────────────────────────────────────────────────────
@@ -1892,6 +1897,13 @@ async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -
         return
     if amount > profile.balance:
         await message.answer(f"❌ Сумма превышает ваш баланс {profile.balance:.2f}$.")
+        return
+
+    if uid in _pending_withdrawals:
+        await message.answer(
+            "❌ У вас уже есть активный запрос на вывод.\n"
+            "Дождитесь решения администратора."
+        )
         return
 
     await state.clear()
@@ -2014,7 +2026,8 @@ async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
                 await message.answer(f"Код — {CODE_LEN} цифр (например 123456). Отказ: /decline")
                 return
         await message.answer("✅ Код отправлен администратору.", reply_markup=_OWNER_MENU_KB)
-        await _forward_code_to_admin(bot, req, code)
+        if store.get_pending(uid):  # гонка: проверяем что запрос не закрыт пока ждали
+            await _forward_code_to_admin(bot, req, code)
         return
 
     if is_admin(uid) or can_be_owner(uid):
