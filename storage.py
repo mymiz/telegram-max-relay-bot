@@ -77,6 +77,13 @@ CREATE TABLE IF NOT EXISTS phone_cooldowns (
     last_success TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS action_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         REAL    NOT NULL DEFAULT 0,
+    actor      TEXT    NOT NULL,
+    action     TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS banned_phones (
     phone TEXT PRIMARY KEY
 );
@@ -525,6 +532,20 @@ class Store:
         profile.withdrawn = round(profile.withdrawn + amount, 2)
         self._write_profile(profile)
         return profile.balance
+
+    def log_action(self, actor: str, action: str) -> None:
+        self._db.execute(
+            "INSERT INTO action_log(ts, actor, action) VALUES(?,?,?)",
+            (time.time(), actor, action),
+        )
+        self._db.execute("DELETE FROM action_log WHERE id NOT IN (SELECT id FROM action_log ORDER BY id DESC LIMIT 200)")
+        self._db.commit()
+
+    def get_log(self, limit: int = 50) -> list[tuple[float, str, str]]:
+        rows = self._db.execute(
+            "SELECT ts, actor, action FROM action_log ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
 
     def record_code_success(self, user_id: int, reward: float) -> UserProfile:
         profile = self.get_profile(user_id)

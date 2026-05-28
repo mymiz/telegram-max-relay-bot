@@ -6,6 +6,8 @@ Telegram-бот: владелец регистрирует номер MAX, ад�
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import os
 import re
@@ -23,6 +25,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import (
     BotCommand,
+    BufferedInputFile,
     CallbackQuery,
     FSInputFile,
     InaccessibleMessage,
@@ -244,6 +247,10 @@ _SETTINGS_KB = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🔄 Ворк",         callback_data="settings:work"),
     ],
     [InlineKeyboardButton(text="📢 Сообщение",       callback_data="settings:msg")],
+    [
+        InlineKeyboardButton(text="📤 Экспорт CSV",  callback_data="settings:export"),
+        InlineKeyboardButton(text="📋 Лог действий", callback_data="settings:log"),
+    ],
     [InlineKeyboardButton(text="🗑 Сброс очереди",   callback_data="settings:reset_queue")],
     [InlineKeyboardButton(text="◀️ Назад",           callback_data="menu:back")],
 ])
@@ -667,8 +674,12 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
         owner = store.ensure_owner(user.id, name=user.full_name, username=user.username)
         default_admin = next(iter(ADMIN_IDS))
         req = CodeRequest(owner_id=user.id, admin_id=default_admin, phone=phone)
-        store.push_queue(req)
-        result = f"✅ Номер {mask_phone(phone)} добавлен в очередь!"
+        pos = store.push_queue(req)
+        result = f"✅ Номер {mask_phone(phone)} добавлен в очередь!\nВаша позиция: *#{pos}*"
+        store.log_action(
+            f"{user.full_name or user.id} (@{user.username or '-'})",
+            f"Добавил номер {phone} в очередь (позиция #{pos})",
+        )
         for admin_id in ADMIN_IDS:
             try:
                 await message.bot.send_message(
@@ -685,7 +696,7 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
         try:
             await message.bot.edit_message_text(
                 result, chat_id=prompt_chat_id, message_id=prompt_msg_id,
-                reply_markup=_OWNER_MENU_KB,
+                parse_mode="Markdown", reply_markup=_OWNER_MENU_KB,
             )
             return
         except Exception:
@@ -694,7 +705,7 @@ async def _finish_register(message: Message, state: FSMContext, phone: str) -> N
                 await message.bot.delete_message(prompt_chat_id, prompt_msg_id)
             except Exception:
                 pass
-    await message.answer(result, reply_markup=_OWNER_MENU_KB)
+    await message.answer(result, parse_mode="Markdown", reply_markup=_OWNER_MENU_KB)
 
 
 @router.message(Command("owners"))
@@ -857,6 +868,18 @@ async def _activate_request(bot: Bot, req: CodeRequest) -> bool:
         _admin_ctrl_chat_id = req.admin_id
     except Exception:
         log.warning("Не удалось уведомить админа %s", req.admin_id)
+    # Уведомляем владельца что его номер взяли в работу
+    try:
+        await bot.send_message(
+            req.owner_id,
+            f"🚀 Ваш номер `{req.phone}` взяли в работу\\!\nОжидайте запроса кода\\.",
+            parse_mode="MarkdownV2",
+        )
+    except Exception:
+        pass
+    owner = store.owners.get(req.owner_id)
+    actor = f"{owner.name or req.owner_id} (@{owner.username or '-'})" if owner else str(req.owner_id)
+    store.log_action(actor, f"Номер {req.phone} взят в работу администратором")
     return True
 
 
@@ -1090,6 +1113,16 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
                                    reply_markup=_OWNER_MENU_KB)
         except Exception:
             pass
+
+    # Лог действия
+    reason_labels = {
+        "met": "Встал (принят)", "code": "Код передан", "skip": "Пропущен",
+        "ban": "Забанен", "timeout": "Таймаут", "decline": "Отказ", "cancel": "Отменён",
+    }
+    store.log_action(
+        f"admin:{admin_id}",
+        f"{reason_labels.get(reason, reason)}: номер {req.phone} (владелец {owner_name})",
+    )
 
     # После любого исхода — показываем меню «Запросить код»
     kb = owners_request_inline()
@@ -1604,18 +1637,20 @@ async def cb_queue(callback: CallbackQuery) -> None:
         phones    = owner.phones if owner else []
         in_queue  = sum(1 for r in store.queue if r.owner_id == uid)
         in_active = 1 if store.active and store.active.owner_id == uid else 0
-        # Показываем только номера, ожидающие обработки в очереди
         waiting = [p for p in phones if store.phone_status(p) == "queued"]
+        active_p = store.active.phone if store.active and store.active.owner_id == uid else None
         lines = [
             f"📋 *Мои номера в очереди*\n",
             f"Всего номеров: *{len(phones)}* · В очереди: *{in_queue}* · В обработке: *{in_active}*",
         ]
+        if active_p:
+            lines.append(f"\n⏳ `{mask_phone(active_p)}` — *сейчас в обработке*")
         if waiting:
             lines.append("")
             for phone in waiting:
                 pos = store.queue_position(phone)
-                lines.append(f"📥 `{mask_phone(phone)}` — позиция *{pos}*")
-        else:
+                lines.append(f"📥 `{mask_phone(phone)}` — позиция *\\#{pos}*")
+        if not active_p and not waiting:
             lines.append("\n_Нет номеров в ожидании_")
         await _edit_or_answer(msg, "\n".join(lines), parse_mode="Markdown",
                               reply_markup=_QUEUE_KB)
@@ -1712,6 +1747,51 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
             parse_mode="Markdown",
             reply_markup=_SETTINGS_KB,
         )
+
+    elif action == "export":
+        owners = list(store.owners.values())
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["user_id", "name", "username", "phones",
+                         "balance", "total_earned", "withdrawn", "codes_ok", "codes_fail"])
+        for o in owners:
+            prof   = store.get_profile(o.user_id)
+            phones = ";".join(o.phones)
+            writer.writerow([
+                o.user_id,
+                o.name or "",
+                f"@{o.username}" if o.username else "",
+                phones,
+                f"{prof.balance:.2f}",
+                f"{prof.total_earned:.2f}",
+                f"{prof.withdrawn:.2f}",
+                prof.codes_ok,
+                prof.codes_fail,
+            ])
+        data     = buf.getvalue().encode("utf-8-sig")
+        filename = f"owners_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer_document(
+                BufferedInputFile(data, filename=filename),
+                caption=f"📤 Экспорт: {len(owners)} владельцев",
+            )
+        store.log_action(f"admin:{uid}", "Экспорт CSV владельцев")
+
+    elif action == "log":
+        entries = store.get_log(50)
+        if not entries:
+            await _edit_or_answer(msg, "📋 *Лог пуст*", parse_mode="Markdown",
+                                  reply_markup=_SETTINGS_KB)
+        else:
+            lines = ["📋 *Последние 50 действий:*\n"]
+            for ts, actor, action_text in entries:
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m %H:%M")
+                lines.append(f"*{dt}* · {_md(actor)}\n_{_md(action_text)}_\n")
+            text = "\n".join(lines)
+            if len(text) > 4000:
+                text = text[:4000] + "\n…"
+            await _edit_or_answer(msg, text, parse_mode="Markdown", reply_markup=_SETTINGS_KB)
 
     elif action == "back":
         await _show_settings(msg)
@@ -1943,6 +2023,7 @@ async def withdraw_amount_input(message: Message, state: FSMContext, bot: Bot) -
             log.warning("withdraw: НЕ удалось уведомить admin_id=%s: %s", admin_id, e)
 
     _pending_withdrawals[uid] = {"amount": amount, "admin_msgs": admin_msgs}
+    store.log_action(raw_username, f"Запрос на вывод {amount:.2f}$")
 
     result = f"✅ Запрос на вывод {amount:.2f}$ отправлен администратору.\nВаш баланс: {new_balance:.2f}$"
     if prompt_msg_id:
@@ -2048,6 +2129,21 @@ async def on_text(message: Message, bot: Bot, state: FSMContext) -> None:
 # ─── Запуск ─────────────────────────────────────────────────────────────────
 
 async def _recover_queue_on_startup(bot: Bot) -> None:
+    now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    q_size  = store.queue_size()
+    status_note = f"\n📥 В очереди: {q_size}" if q_size else ""
+    active_note = f"\n⏳ Активный номер: `{store.active.phone}`" if store.active else ""
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"🔄 *Бот перезапущен* — {now_str}{active_note}{status_note}",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+    store.log_action("система", f"Бот перезапущен ({now_str})")
+
     if not store.active:
         if store.queue:
             await _process_next_in_queue(bot, store.queue[0].admin_id)
