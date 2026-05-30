@@ -118,8 +118,9 @@ class OwnerRegister(StatesGroup):
 
 
 class AdminSettings(StatesGroup):
-    waiting_price     = State()
-    waiting_broadcast = State()
+    waiting_price      = State()
+    waiting_broadcast  = State()
+    waiting_ref_reward = State()
 
 
 class OwnerWithdraw(StatesGroup):
@@ -248,6 +249,7 @@ _SETTINGS_KB = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🔄 Ворк",         callback_data="settings:work"),
     ],
     [InlineKeyboardButton(text="📢 Сообщение",       callback_data="settings:msg")],
+    [InlineKeyboardButton(text="🎁 Реф. бонус",      callback_data="settings:ref_reward")],
     [
         InlineKeyboardButton(text="📤 Экспорт CSV",  callback_data="settings:export"),
         InlineKeyboardButton(text="📋 Лог действий", callback_data="settings:log"),
@@ -1517,15 +1519,16 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
 
     elif action == "reflink":
         bot_me = await callback.bot.get_me()
-        ref_url = f"https://t.me/{bot_me.username}?start=ref_{uid}"
+        ref_url    = f"https://t.me/{bot_me.username}?start=ref_{uid}"
         ref_reward = store.get_ref_reward()
         ref_count  = store.referral_count(uid)
         text = (
             f"🔗 *Ваша реферальная ссылка:*\n\n`{ref_url}`\n\n"
             f"👥 Приглашено: *{ref_count}*\n"
-            f"🎁 Бонус за реферала: *{ref_reward:.2f}$* \\(начисляется при первом успешном запросе\\)"
+            f"🎁 Бонус за реферала: *{ref_reward:.2f}$* "
+            f"(начисляется когда реферал получит выплату)"
         )
-        await _edit_or_answer(msg, text, parse_mode="MarkdownV2", reply_markup=_BACK_KB)
+        await _edit_or_answer(msg, text, parse_mode="Markdown", reply_markup=_BACK_KB)
 
     elif action == "numbers" and is_admin(uid):
         await _edit_or_answer(
@@ -1846,6 +1849,15 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
                 text = text[:4000] + "\n…"
             await _edit_or_answer(msg, text, parse_mode="Markdown", reply_markup=_SETTINGS_KB)
 
+    elif action == "ref_reward":
+        current = store.get_ref_reward()
+        await _edit_or_answer(
+            msg,
+            f"🎁 Текущий реф. бонус: *{current:.2f}$*\n\nВведите новый размер бонуса (например `0.1`):",
+            parse_mode="Markdown",
+        )
+        await state.set_state(AdminSettings.waiting_ref_reward)
+
     elif action == "back":
         await _show_settings(msg)
 
@@ -2016,6 +2028,25 @@ async def settings_broadcast_input(message: Message, state: FSMContext, bot: Bot
         except Exception:
             pass
     await message.answer(result, reply_markup=_SETTINGS_KB)
+
+
+@router.message(AdminSettings.waiting_ref_reward, F.text)
+async def settings_ref_reward_input(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip().replace(",", ".")
+    try:
+        value = float(raw)
+        if value < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите корректное число, например `0.1`", parse_mode="Markdown")
+        return
+    store.set_ref_reward(value)
+    await state.clear()
+    await message.answer(
+        f"✅ Реф. бонус установлен: *{value:.2f}$*",
+        parse_mode="Markdown",
+        reply_markup=_SETTINGS_KB,
+    )
 
 
 @router.message(OwnerWithdraw.waiting_amount, F.text)
