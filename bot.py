@@ -1079,7 +1079,6 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
         profile = store.record_code_success(req.owner_id, CODE_REWARD)
         store.record_phone_success(req.phone)
         store.record_phone_history(req.owner_id, req.phone, "success")
-        await _pay_ref_bonus(bot, req.owner_id)
         note = f"\n💰 +{CODE_REWARD:.0f}$ · баланс *{profile.balance:.2f}$*" if CODE_REWARD > 0 else ""
         if message:
             await message.answer(f"✅ Код передан. Спасибо!{note}",
