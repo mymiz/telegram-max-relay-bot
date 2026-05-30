@@ -781,6 +781,7 @@ async def _schedule_reward(bot: Bot, owner_id: int, phone: str) -> None:
                                    reply_markup=_OWNER_MENU_KB)
         except Exception:
             pass
+        await _pay_ref_bonus(bot, owner_id)
 
     _reward_task = asyncio.create_task(_pay())
 
@@ -1064,7 +1065,6 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
         store.record_phone_success(req.phone)
         store.record_phone_history(req.owner_id, req.phone, "success")
         await _schedule_reward(bot, req.owner_id, req.phone)
-        await _pay_ref_bonus(bot, req.owner_id)
         try:
             await bot.send_message(
                 req.owner_id,
