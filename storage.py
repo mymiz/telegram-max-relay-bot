@@ -130,6 +130,8 @@ class UserProfile:
     name: str | None = None
     username: str | None = None
     created_at: float = field(default_factory=time.time)
+    referrer_id: int | None = None
+    ref_bonus_earned: bool = False
 
 
 @dataclass
@@ -156,14 +158,16 @@ class Store:
         self._db = sqlite3.connect(str(DB_FILE), check_same_thread=False)
         self._db.executescript(_DDL)
         self._db.commit()
-        # Миграция: добавляем колонку success_ts если её ещё нет
-        try:
-            self._db.execute(
-                "ALTER TABLE phone_cooldowns ADD COLUMN success_ts REAL NOT NULL DEFAULT 0"
-            )
-            self._db.commit()
-        except Exception:
-            pass  # Колонка уже существует
+        for _migration in [
+            "ALTER TABLE phone_cooldowns ADD COLUMN success_ts REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE profiles ADD COLUMN referrer_id INTEGER",
+            "ALTER TABLE profiles ADD COLUMN ref_bonus_earned INTEGER NOT NULL DEFAULT 0",
+        ]:
+            try:
+                self._db.execute(_migration)
+                self._db.commit()
+            except Exception:
+                pass
         self._load()
 
     # ── загрузка ──────────────────────────────────────────────────────────────
@@ -188,13 +192,15 @@ class Store:
 
         for row in self._db.execute(
             "SELECT user_id, balance, codes_ok, codes_fail, total_earned, "
-            "withdrawn, name, username, created_at FROM profiles"
+            "withdrawn, name, username, created_at, referrer_id, ref_bonus_earned FROM profiles"
         ):
-            uid, bal, ok, fail, earned, withdrawn, name, uname, cat = row
+            uid, bal, ok, fail, earned, withdrawn, name, uname, cat, ref_id, ref_bonus = row
             self.profiles[uid] = UserProfile(
                 user_id=uid, balance=bal, codes_ok=ok, codes_fail=fail,
                 total_earned=earned, withdrawn=withdrawn,
                 name=name, username=uname, created_at=cat,
+                referrer_id=ref_id,
+                ref_bonus_earned=bool(ref_bonus),
             )
 
         row = self._db.execute(
@@ -311,15 +317,18 @@ class Store:
             self._db.execute(
                 """INSERT INTO profiles
                    (user_id, balance, codes_ok, codes_fail, total_earned,
-                    withdrawn, name, username, created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?)
+                    withdrawn, name, username, created_at, referrer_id, ref_bonus_earned)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(user_id) DO UPDATE SET
                    balance=excluded.balance, codes_ok=excluded.codes_ok,
                    codes_fail=excluded.codes_fail, total_earned=excluded.total_earned,
                    withdrawn=excluded.withdrawn, name=excluded.name,
-                   username=excluded.username, created_at=excluded.created_at""",
+                   username=excluded.username, created_at=excluded.created_at,
+                   referrer_id=excluded.referrer_id,
+                   ref_bonus_earned=excluded.ref_bonus_earned""",
                 (p.user_id, p.balance, p.codes_ok, p.codes_fail,
-                 p.total_earned, p.withdrawn, p.name, p.username, p.created_at),
+                 p.total_earned, p.withdrawn, p.name, p.username, p.created_at,
+                 p.referrer_id, int(p.ref_bonus_earned)),
             )
 
     def _write_setting(self, key: str, value: str) -> None:
@@ -375,16 +384,19 @@ class Store:
             self._db.executemany(
                 """INSERT INTO profiles
                    (user_id, balance, codes_ok, codes_fail, total_earned,
-                    withdrawn, name, username, created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?)
+                    withdrawn, name, username, created_at, referrer_id, ref_bonus_earned)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(user_id) DO UPDATE SET
                    balance=excluded.balance, codes_ok=excluded.codes_ok,
                    codes_fail=excluded.codes_fail, total_earned=excluded.total_earned,
                    withdrawn=excluded.withdrawn, name=excluded.name,
-                   username=excluded.username, created_at=excluded.created_at""",
+                   username=excluded.username, created_at=excluded.created_at,
+                   referrer_id=excluded.referrer_id,
+                   ref_bonus_earned=excluded.ref_bonus_earned""",
                 [
                     (p.user_id, p.balance, p.codes_ok, p.codes_fail,
-                     p.total_earned, p.withdrawn, p.name, p.username, p.created_at)
+                     p.total_earned, p.withdrawn, p.name, p.username, p.created_at,
+                     p.referrer_id, int(p.ref_bonus_earned))
                     for p in self.profiles.values()
                 ],
             )
@@ -532,6 +544,42 @@ class Store:
         profile.withdrawn = round(profile.withdrawn + amount, 2)
         self._write_profile(profile)
         return profile.balance
+
+    def set_referrer(self, user_id: int, referrer_id: int) -> bool:
+        """Устанавливает реферера. Возвращает False если уже был установлен."""
+        profile = self.get_profile(user_id)
+        if profile.referrer_id is not None:
+            return False
+        profile.referrer_id = referrer_id
+        self._write_profile(profile)
+        return True
+
+    def get_ref_reward(self) -> float:
+        row = self._db.execute(
+            "SELECT value FROM settings WHERE key='ref_reward'"
+        ).fetchone()
+        return float(row[0]) if row else 0.1
+
+    def set_ref_reward(self, amount: float) -> None:
+        self._write_setting("ref_reward", str(amount))
+
+    def try_pay_ref_bonus(self, referee_id: int) -> tuple[int | None, float]:
+        """Начисляет бонус рефереру при первом успехе реферала.
+        Возвращает (referrer_id, amount) или (None, 0) если не применимо."""
+        profile = self.get_profile(referee_id)
+        if profile.referrer_id is None or profile.ref_bonus_earned:
+            return None, 0.0
+        reward = self.get_ref_reward()
+        if reward <= 0:
+            return None, 0.0
+        profile.ref_bonus_earned = True
+        self._write_profile(profile)
+        self.add_balance(profile.referrer_id, reward)
+        return profile.referrer_id, reward
+
+    def referral_count(self, user_id: int) -> int:
+        """Количество рефералов у пользователя."""
+        return sum(1 for p in self.profiles.values() if p.referrer_id == user_id)
 
     def log_action(self, actor: str, action: str) -> None:
         self._db.execute(

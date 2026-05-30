@@ -162,6 +162,7 @@ _OWNER_MENU_KB = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="📊 Статистика",    callback_data="menu:stats"),
     ],
     [InlineKeyboardButton(text="💸 Вывод средств",    callback_data="menu:withdraw")],
+    [InlineKeyboardButton(text="🔗 Реферальная ссылка", callback_data="menu:reflink")],
     _SUPPORT_ROW,
 ])
 
@@ -430,8 +431,9 @@ def format_profile_text(user_id: int) -> str:
     raw_uname = (owner.username if owner else None) or profile.username
     in_queue  = sum(1 for r in store.queue if r.owner_id == user_id)
     in_active = 1 if store.active and store.active.owner_id == user_id else 0
-    total_ok  = profile.codes_ok
-    return "\n".join([
+    ref_count = store.referral_count(user_id)
+    ref_reward = store.get_ref_reward()
+    lines = [
         "👤 *ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ*\n",
         f"┌ Имя: {_md(raw_name)}",
         f"├ Юзернейм: @{_md(raw_uname)}" if raw_uname else "├ Юзернейм: —",
@@ -441,12 +443,19 @@ def format_profile_text(user_id: int) -> str:
         f"┌ Баланс: *{profile.balance:.2f}$*",
         f"├ Заработано: *{profile.total_earned:.2f}$*",
         f"├ Выведено: *{profile.withdrawn:.2f}$*",
-        f"└ Успешных номеров: *{total_ok}*",
+        f"└ Успешных номеров: *{profile.codes_ok}*",
         "",
         "⏳ *ТЕКУЩИЕ ЗАЯВКИ*\n",
         f"┌ В очереди: *{in_queue}*",
         f"└ В обработке: *{in_active}*",
-    ])
+    ]
+    if ref_reward > 0:
+        lines += [
+            "",
+            "👥 *РЕФЕРАЛЫ*\n",
+            f"└ Приглашено: *{ref_count}* · бонус за реферала: *{ref_reward:.2f}$*",
+        ]
+    return "\n".join(lines)
 
 
 # ─── Хелпер редактирования ──────────────────────────────────────────────────
@@ -533,7 +542,7 @@ _SUB_TEXT = (
 # ─── Команды ────────────────────────────────────────────────────────────────
 
 @router.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext) -> None:
+async def cmd_start(message: Message, state: FSMContext, command: CommandObject) -> None:
     await state.clear()
     user = message.from_user
     uid  = user.id if user else 0
@@ -543,6 +552,15 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         store.touch_profile(uid, name=user.full_name, username=user.username)
         if uid in store.owners:
             store.update_owner_info(uid, user.full_name, user.username)
+
+    # Обработка реферальной ссылки (?start=ref_XXXX)
+    if first_time and command.args and command.args.startswith("ref_"):
+        try:
+            referrer_id = int(command.args[4:])
+            if referrer_id != uid and referrer_id in store.all_users:
+                store.set_referrer(uid, referrer_id)
+        except ValueError:
+            pass
 
     if not is_admin(uid) and not await _is_subscribed(message.bot, uid):
         await message.answer(_SUB_TEXT, parse_mode="MarkdownV2", reply_markup=_SUB_KB)
@@ -999,6 +1017,29 @@ async def _queue_all_phones(bot: Bot, admin_id: int, msg: Message) -> None:
     )
 
 
+async def _pay_ref_bonus(bot: Bot, referee_id: int) -> None:
+    """Начисляет единоразовый реферальный бонус, если применимо."""
+    referrer_id, amount = store.try_pay_ref_bonus(referee_id)
+    if referrer_id is None:
+        return
+    referrer = store.owners.get(referrer_id)
+    ref_name = referrer.name or str(referrer_id) if referrer else str(referrer_id)
+    referee  = store.owners.get(referee_id)
+    ref_username = f"@{referee.username}" if (referee and referee.username) else str(referee_id)
+    try:
+        new_bal = store.get_profile(referrer_id).balance
+        await bot.send_message(
+            referrer_id,
+            f"🎁 Реферальный бонус *+{amount:.2f}$*!\n"
+            f"Ваш реферал {_md(ref_username)} успешно завершил первый запрос.\n"
+            f"Баланс: *{new_bal:.2f}$*",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+    store.log_action(f"система", f"Реф. бонус {amount:.2f}$ → {ref_name} (реферал: {ref_username})")
+
+
 async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
                          message: Message | None = None) -> None:
     global _admin_ctrl_msg_id, _admin_ctrl_chat_id, _password_mode, _password_attempts, _request_kind
@@ -1023,6 +1064,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
         store.record_phone_success(req.phone)
         store.record_phone_history(req.owner_id, req.phone, "success")
         await _schedule_reward(bot, req.owner_id, req.phone)
+        await _pay_ref_bonus(bot, req.owner_id)
         try:
             await bot.send_message(
                 req.owner_id,
@@ -1037,6 +1079,7 @@ async def _finish_active(bot: Bot, *, reason: str, code: str | None = None,
         profile = store.record_code_success(req.owner_id, CODE_REWARD)
         store.record_phone_success(req.phone)
         store.record_phone_history(req.owner_id, req.phone, "success")
+        await _pay_ref_bonus(bot, req.owner_id)
         note = f"\n💰 +{CODE_REWARD:.0f}$ · баланс *{profile.balance:.2f}$*" if CODE_REWARD > 0 else ""
         if message:
             await message.answer(f"✅ Код передан. Спасибо!{note}",
@@ -1472,6 +1515,18 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
                 prompt_msg_id=sent.message_id if sent else None,
                 prompt_chat_id=msg.chat.id,
             )
+
+    elif action == "reflink":
+        bot_me = await callback.bot.get_me()
+        ref_url = f"https://t.me/{bot_me.username}?start=ref_{uid}"
+        ref_reward = store.get_ref_reward()
+        ref_count  = store.referral_count(uid)
+        text = (
+            f"🔗 *Ваша реферальная ссылка:*\n\n`{ref_url}`\n\n"
+            f"👥 Приглашено: *{ref_count}*\n"
+            f"🎁 Бонус за реферала: *{ref_reward:.2f}$* \\(начисляется при первом успешном запросе\\)"
+        )
+        await _edit_or_answer(msg, text, parse_mode="MarkdownV2", reply_markup=_BACK_KB)
 
     elif action == "numbers" and is_admin(uid):
         await _edit_or_answer(
